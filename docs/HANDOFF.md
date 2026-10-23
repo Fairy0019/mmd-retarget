@@ -14,7 +14,7 @@
 | 素材 | `/root/mmd-vision/assets/`（私有，**不入库**） |
 
 ```bash
-.venv/bin/python -m pytest -q          # 56 passed
+.venv/bin/python -m pytest -q          # 69 passed
 .venv/bin/python tools/bench_vmd.py    # 140×5640, 约 3.4s
 ```
 
