@@ -105,6 +105,9 @@ def cmd_retarget(args: argparse.Namespace) -> int:
         print(f"dropped   : {len(out.dropped_bones)} extra bones (目标模型没有)")
     if missing:
         print(f"unmapped  : {len(missing)} semantics 在目标 profile 中缺失")
+    if stats.get("chain_split"):
+        print(f"spine     : split across {len(stats['chain_split'])} target bones "
+              f"({', '.join(stats['chain_split'])})")
     print(
         f"foot lock : {stats.get('locked', 0)}/{stats.get('chunks', 0)} chunks, "
         f"{stats.get('locked_frames', 0)} frames "
@@ -115,7 +118,7 @@ def cmd_retarget(args: argparse.Namespace) -> int:
         f"slide     : mean {before['mean_slide']:.4f} -> {after['mean_slide']:.4f} units/frame "
         f"(全段；未锁窗口仍保留源滑步)"
     )
-    print("note      : M1 stage 1（比例 + 脚锁）；手臂 IK/间隙/平滑尚未接入")
+    print("note      : M1 stage 1+2（比例 + 脚锁 + 脊柱链）；手臂 IK/间隙/平滑尚未接入")
     print(f"written   : {args.out}")
     return 0
 

@@ -17,14 +17,20 @@ import copy
 import math
 from typing import Any
 
-from .canonical import forward_positions, sample_keys
+from .canonical import forward_positions, qslerp, sample_keys
 
 __all__ = [
     "DEFAULT_CONFIG",
+    "SPINE_CHAIN",
     "height_scale",
+    "retarget_rotations",
     "retarget_motion",
     "contact_slide_stats",
 ]
+
+#: 需要按链长分配的脊柱语义（源模型常常只有 上半身，目标有三段）。
+SPINE_CHAIN = ("spine", "spine1", "spine2", "spine3")
+_IDENTITY_Q = (0.0, 0.0, 0.0, 1.0)
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "scale": {"mode": "height"},
@@ -65,6 +71,48 @@ def height_scale(source: dict, target: dict) -> float:
     if hs <= 1e-9:
         return 1.0
     return ht / hs
+
+
+def _split_rotation(keys: list[list[float]], n: int) -> list[list[float]]:
+    """把一段旋转均分成 n 份（同一轴时乘积严格等于原旋转）。"""
+    if n <= 1:
+        return keys
+    out = []
+    for k in keys:
+        q = qslerp(_IDENTITY_Q, (k[1], k[2], k[3], k[4]), 1.0 / n)
+        out.append([k[0], *q])
+    return out
+
+
+def retarget_rotations(joints: dict, target: dict) -> tuple[dict, list[str]]:
+    """局部旋转映射 + 脊柱链拆分。
+
+    MMD 的 VMD 局部旋转已经是「相对 rest」的旋转，同一语义骨直接复制即可；
+    唯一需要处理的是**链长差**：源只有 ``上半身``，目标有
+    ``上半身/上半身1/上半身2``。把源的局部旋转均分到目标链上，末端世界
+    朝向保持不变（同轴时严格相等）。
+    """
+    out = copy.deepcopy(joints)
+    target_map = target.get("map", {})
+    chain = [s for s in SPINE_CHAIN if s in target_map]
+    split: list[str] = []
+
+    i = 0
+    while i < len(chain):
+        sem = chain[i]
+        if sem not in joints:
+            i += 1
+            continue
+        j = i + 1
+        while j < len(chain) and chain[j] not in joints:
+            j += 1
+        n = j - i
+        if n > 1:
+            for name in chain[i:j]:
+                out[name] = _split_rotation(joints[sem], n)
+                split.append(name)
+        i = j
+    return out, split
 
 
 def _scale_keys(keys: list[list[float]], scale: float) -> list[list[float]]:
@@ -124,6 +172,7 @@ def retarget_motion(
     cfg = _deep_merge(DEFAULT_CONFIG, config)
     out = copy.deepcopy(canonical)
     scale = height_scale(source, target)
+    out["joints"], split = retarget_rotations(out.get("joints", {}), target)
     s_mapping = source.get("map", {})
     t_mapping = target.get("map", {})
     s_rest = source.get("rest", {})
@@ -151,6 +200,7 @@ def retarget_motion(
         "skipped_drift": 0,
         "skipped_reach": 0,
         "max_reach_ratio": 0.0,
+        "chain_split": split,
     }
 
     if not cfg["foot_lock"].get("enabled", True):

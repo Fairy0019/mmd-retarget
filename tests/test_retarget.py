@@ -118,3 +118,40 @@ def test_missing_ik_is_skipped():
     out = retarget_motion(make_canonical(), src, tgt)
     assert out["meta"]["retarget"]["skipped_no_ik"] == 1
     assert out["meta"]["retarget"]["locked"] == 0
+
+
+def test_spine_chain_is_distributed():
+    from mmd_retarget.canonical import qmul
+    from mmd_retarget.retarget import retarget_rotations
+
+    # 30° 绕 Z
+    q = (0.0, 0.0, 0.2588190451, 0.9659258263)
+    joints = {"spine": [[0, *q]]}
+    target = {"map": {"spine": "上半身", "spine1": "上半身1", "spine2": "上半身2"}}
+    out, split = retarget_rotations(joints, target)
+    assert split == ["spine", "spine1", "spine2"]
+    assert len(out["spine1"]) == 1
+    # 每段 10°，复合回 30°
+    total = (0.0, 0.0, 0.0, 1.0)
+    for name in ("spine", "spine1", "spine2"):
+        total = qmul(total, tuple(out[name][0][1:]))
+    assert abs(total[2] - q[2]) < 1e-6 and abs(total[3] - q[3]) < 1e-6
+
+
+def test_spine_split_only_extends_missing_tail():
+    from mmd_retarget.retarget import retarget_rotations
+
+    q1 = (0.0, 0.0, 0.1, 0.9949874)
+    joints = {"spine": [[0, 0, 0, 0.2588, 0.9659]], "spine1": [[0, *q1]]}
+    target = {"map": {"spine": "上半身", "spine1": "上半身1", "spine2": "上半身2"}}
+    out, split = retarget_rotations(joints, target)
+    assert out["spine"] == joints["spine"]  # 不拆已有完整前缀
+    assert split == ["spine1", "spine2"]
+
+
+def test_rotation_passthrough_without_target_chain():
+    from mmd_retarget.retarget import retarget_rotations
+
+    joints = {"leftUpperArm": [[0, 0.1, 0.2, 0.3, 0.9]]}
+    out, split = retarget_rotations(joints, {"map": {"leftUpperArm": "左腕"}})
+    assert out == joints and split == []
