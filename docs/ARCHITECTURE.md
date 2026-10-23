@@ -18,19 +18,28 @@
 
 ## 2. 数据模型
 
-### 2.1 `canonical_motion.json`
+### 2.1 `canonical_motion.json`（schema 1）
 
 ```jsonc
 {
+  "schema": 1,
   "fps": 30,
   "frames": 5640,
-  "source": { "model": "初音ミク", "profile": "miku_v2.json" },
-  "root": [ { "t": 0, "pos": [0,0,0], "rot": [0,0,0,1] } ],
+  "source": { "model": "初音ミク", "vmd": "motion.vmd", "profile": "miku.json" },
+  "root": {
+    "pos": [ [0, 0,0,0] ],
+    "rot": [ [0, 0,0,0,1] ]
+  },
   "joints": {
     "leftUpperArm": [ [0, 0,0,0,1], [1, -0.02,0,0.01,0.999] ]
   },
+  "translations": { "leftFootIK": [ [0, 0.1,1.2,0] ] },
+  "extra": { "ﾈｸﾀｲ１": [ [0, 0,0,0,1] ] },
+  "extra_translations": { "左袖": [ [0, 0,0,0] ] },
   "contacts": [
-    { "start": 120, "end": 168, "effector": "footL", "pos": [0.1,0.0,0.02] }
+    { "start": 120, "end": 168, "effector": "leftFoot",
+      "pos": [0.1,0.0,0.02], "min_y": 0.01,
+      "mean_slide": 0.02, "max_slide": 0.06 }
   ],
   "morphs": { "まばたき": [ [0,0.0], [12,1.0], [16,0.0] ] }
 }
@@ -38,7 +47,11 @@
 
 - 关节用**语义名**（`leftUpperArm`），与模型解耦；
 - 旋转用四元数 `[x,y,z,w]`，与帧号成对；
-- 接触段是**区间**，不是单帧。
+- `root` 的 pos / rot 分开存：VMD 里两者关键帧时刻经常不同；
+- `extra` 是**没有语义映射**的骨（头发/裙/袖），同模型 round-trip 时
+  原样透传，换模型时丢弃；物理件由 M3 重新模拟；
+- 接触段是**区间**，不是单帧；`mean_slide` / `max_slide` 记录源动作在
+  该段内的滑步量（单位/帧），供 M1 判断锁定强度。
 
 ### 2.2 `skeleton_profile.json`
 

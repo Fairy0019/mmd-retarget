@@ -5,8 +5,9 @@
 把「为 A 体型编排的 VMD，套到 B 体型上」这件事，从**逐帧手调**变成
 **可复现的管线 + 可读的报告**。
 
-> 状态：**设计阶段**（v0.0.x）。CLI 与数据格式已定，核心算法按
-> [docs/PLAN.md](docs/PLAN.md) 的里程碑推进。
+> 状态：**M0 数据层完成**（v0.0.2）。VMD/PMX 解析、skeleton profile、
+> canonical motion 与 VMD 回写已可用；身体重定向从 M1 开始。
+> 进度见 [docs/PLAN.md](docs/PLAN.md)，实测报告见 `docs/reports/`。
 
 ---
 
@@ -57,14 +58,29 @@ VMD + 源骨架档案 + 目标骨架档案
 | [docs/PLAN.md](docs/PLAN.md) | 里程碑 M0–M4 与验收标准 |
 | [docs/STEPS.md](docs/STEPS.md) | 开发步骤拆解（12 步、依赖、验收） |
 
-## 快速开始（暂不可用）
+## 快速开始（M0，不需要 Blender）
 
 ```bash
-# 需要 Blender 5.0+ 的 Python 环境
-blender -b --python -m mmd_retarget.cli -- inspect model.pmx
+python -m venv .venv
+. .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"       # 或 pip install numpy pytest
+
+# 1) 看模型 / 动作
+python -m mmd_retarget.cli inspect model.pmx
+python -m mmd_retarget.cli inspect motion.vmd
+
+# 2) 生成目标骨架档案
+python -m mmd_retarget.cli skeleton model.pmx -o profile.json
+
+# 3) VMD → canonical motion（接触段需要 profile）
+python -m mmd_retarget.cli inspect motion.vmd -p profile.json -o motion.json
+
+# 4) canonical → VMD（M0 为 pass-through，M1 才做比例/rest/IK）
+python -m mmd_retarget.cli retarget motion.json -s src.json -t dst.json -o out.vmd
 ```
 
-> 目前只有 CLI 骨架，命令会提示 `not implemented`。
+> `retarget` 目前只做语义映射与回写，不做 rest-relative 适配、脚锁和 IK；
+> 输出用于验证数据闭环，不是最终可用的重定向结果。
 
 ## 技术栈
 
