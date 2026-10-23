@@ -16,12 +16,39 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .pmx import PmxError, read_pmx
+from .skeleton import write_profile
 from .vmd import VmdError, read_vmd
 
 
 def cmd_stub(args: argparse.Namespace) -> int:
     print(f"[{args.command}] not implemented yet (mmd-retarget {__version__})")
     print("see docs/PLAN.md for milestones")
+    return 0
+
+
+def cmd_skeleton(args: argparse.Namespace) -> int:
+    path = Path(args.model)
+    if not path.is_file():
+        print(f"error: file not found: {path}", file=sys.stderr)
+        return 2
+    try:
+        pmx = read_pmx(path)
+        profile = write_profile(pmx, args.out)
+    except (PmxError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    stats = profile["stats"]
+    print(f"model     : {pmx.name}")
+    print(f"bones     : {stats['bones']}")
+    print(f"mapped    : {stats['mapped']}/{stats['semantics']} semantics "
+          f"({stats['map_coverage'] * 100:.1f}%)")
+    print(f"limits    : {stats['limits']}")
+    print(f"colliders : {stats['colliders']}")
+    if profile["map_missing"]:
+        print(f"missing   : {', '.join(profile['map_missing'])}")
+    print(f"written   : {args.out}")
     return 0
 
 
@@ -32,9 +59,31 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         return 2
 
     suffix = path.suffix.lower()
+    if suffix == ".pmx":
+        try:
+            pmx = read_pmx(path)
+        except (PmxError, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        info = pmx.summary()
+        if args.json:
+            info["file"] = str(path)
+            info["bytes"] = path.stat().st_size
+            print(json.dumps(info, ensure_ascii=False, indent=2))
+            return 0
+        print(f"file      : {path} ({path.stat().st_size:,} bytes)")
+        print(f"model     : {pmx.name} / {pmx.name_en}")
+        print(f"format    : PMX {pmx.version} ({pmx.encoding})")
+        print(f"vertices  : {info['vertices']:,} ({info['triangles']:,} triangles)")
+        print(f"bones     : {info['bones']} ({info['ik_bones']} IK)")
+        print(f"materials : {info['materials']}")
+        print(f"morphs    : {info['morphs']}")
+        print(f"textures  : {info['textures']}")
+        return 0
+
     if suffix != ".vmd":
         print(f"error: unsupported format for now: {suffix or '(none)'}", file=sys.stderr)
-        print("M0 目前只支持 .vmd；PMX 解析在下一步接入。", file=sys.stderr)
+        print("M0 支持 .vmd 与 .pmx。", file=sys.stderr)
         return 2
 
     try:
@@ -82,7 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("skeleton", help="generate skeleton_profile.json from a PMX")
     s.add_argument("model")
     s.add_argument("-o", "--out", default="skeleton_profile.json")
-    s.set_defaults(func=cmd_stub)
+    s.set_defaults(func=cmd_skeleton)
 
     i = sub.add_parser("inspect", help="parse a VMD/PMX and print a summary")
     i.add_argument("file")
