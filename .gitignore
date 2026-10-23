@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# 测试与覆盖率
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 本地素材（绝不入库：模型/动作/音乐版权归原作者）
+assets/
+*.pmx
+*.pmd
+*.vmd
+*.vpd
+*.mp3
+*.ogg
+*.wav
+*.blend
+*.blend1
