@@ -17,6 +17,7 @@ from pathlib import Path
 
 from . import __version__
 from .canonical import build_canonical, load_canonical, save_canonical
+from .retarget import contact_slide_stats, retarget_motion
 from .pmx import PmxError, read_pmx
 from .skeleton import load_profile, write_profile
 from .vmd import VmdError, read_vmd, write_vmd
@@ -71,7 +72,18 @@ def cmd_retarget(args: argparse.Namespace) -> int:
         print(f"error: unsupported canonical schema: {motion.get('schema')}", file=sys.stderr)
         return 2
 
-    out = canonical_to_vmd(motion, target)
+    config = None
+    if args.config:
+        try:
+            config = json.loads(Path(args.config).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"error: config: {exc}", file=sys.stderr)
+            return 1
+
+    before = contact_slide_stats(motion, source)
+    result = retarget_motion(motion, source, target, config=config)
+    after = contact_slide_stats(result, target)
+    out = canonical_to_vmd(result, target)
     try:
         write_vmd(out, args.out)
     except OSError as exc:
@@ -81,15 +93,29 @@ def cmd_retarget(args: argparse.Namespace) -> int:
     missing = [
         sem for sem in motion.get("joints", {}) if sem not in target.get("map", {})
     ]
+    stats = result.get("meta", {}).get("retarget", {})
+    height = stats.get("target_height") or 18.0
+    mpu = 1.6 / height  # 粗略假设角色身高 1.6 m
     print(f"canonical : {args.motion}")
     print(f"source    : {source.get('model', '?')} -> target: {target.get('model', '?')}")
+    print(f"scale     : {stats.get('scale', 1.0):.4f} (height {stats.get('source_height', '?')} -> {stats.get('target_height', '?')})")
     print(f"keys      : {len(out.bone_frames):,} bone / {len(out.morph_frames):,} morph")
     print(f"morphs    : {len(out.morphs)}")
     if out.dropped_bones:
         print(f"dropped   : {len(out.dropped_bones)} extra bones (目标模型没有)")
     if missing:
         print(f"unmapped  : {len(missing)} semantics 在目标 profile 中缺失")
-    print("note      : M0 pass-through，未做 rest-relative / 脚锁 / IK")
+    print(
+        f"foot lock : {stats.get('locked', 0)}/{stats.get('chunks', 0)} chunks, "
+        f"{stats.get('locked_frames', 0)} frames "
+        f"({stats.get('locked_coverage', 0.0) * 100:.1f}%), "
+        f"skip drift {stats.get('skipped_drift', 0)} / reach {stats.get('skipped_reach', 0)}"
+    )
+    print(
+        f"slide     : mean {before['mean_slide']:.4f} -> {after['mean_slide']:.4f} units/frame "
+        f"(全段；未锁窗口仍保留源滑步)"
+    )
+    print("note      : M1 stage 1（比例 + 脚锁）；手臂 IK/间隙/平滑尚未接入")
     print(f"written   : {args.out}")
     return 0
 

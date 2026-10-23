@@ -1,0 +1,120 @@
+# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: GPL-3.0-or-later
+from __future__ import annotations
+
+import pytest
+
+from mmd_retarget.retarget import (
+    contact_slide_stats,
+    height_scale,
+    retarget_motion,
+)
+
+
+def make_profiles(factor: float = 1.0):
+    def prof(height: float, factor: float) -> dict:
+        return {
+            "model": "M",
+            "map": {
+                "root": "センター",
+                "leftUpperLeg": "左足",
+                "leftLowerLeg": "左ひざ",
+                "leftFoot": "左足首",
+                "leftFootIK": "左足ＩＫ",
+            },
+            "rest": {
+                "センター": {"head": [0.0, 10.0 * factor, 0.0], "parent": None},
+                "左足": {"head": [0.5 * factor, 5.0 * factor, 0.0], "parent": "センター"},
+                "左ひざ": {"head": [1.0 * factor, 2.5 * factor, 0.0], "parent": "左足"},
+                "左足首": {"head": [0.5 * factor, 0.0, 0.0], "parent": "左ひざ"},
+                "左足ＩＫ": {"head": [0.5 * factor, 0.0, 0.0], "parent": "センター"},
+            },
+        }
+
+    return prof(10, 1.0), prof(10 * factor, factor)
+
+
+def make_canonical(contact_pos=(0.6, 0.0, 0.0), ik_keys=None) -> dict:
+    if ik_keys is None:
+        ik_keys = [[0, 0.0, 0.0, 0.0], [10, 0.2, 0.0, 0.0]]
+    return {
+        "schema": 1,
+        "fps": 30,
+        "frames": 11,
+        "root": {"pos": [[0, 0.0, 0.0, 1.0]], "rot": []},
+        "joints": {},
+        "translations": {"leftFootIK": ik_keys},
+        "extra": {},
+        "extra_translations": {},
+        "contacts": [
+            {"start": 0, "end": 10, "effector": "leftFoot", "pos": list(contact_pos), "mean_slide": 0.5}
+        ],
+        "morphs": {},
+        "meta": {},
+    }
+
+
+def test_height_scale():
+    src, tgt = make_profiles(2.0)
+    assert height_scale(src, tgt) == pytest.approx(2.0)
+
+
+def test_scale_root_and_translations():
+    src, tgt = make_profiles(2.0)
+    out = retarget_motion(make_canonical(), src, tgt, config={"foot_lock": {"enabled": False}})
+    assert out["root"]["pos"][0][1:] == pytest.approx([0.0, 0.0, 2.0])
+    assert out["translations"]["leftFootIK"][0][1:] == pytest.approx([0.0, 0.0, 0.0])
+    assert out["meta"]["retarget"]["scale"] == pytest.approx(2.0)
+
+
+def test_foot_lock_is_constant_over_segment():
+    src, tgt = make_profiles(1.0)
+    out = retarget_motion(make_canonical(ik_keys=[[0, 0.0, 0.5, 0.0]]), src, tgt)
+    keys = out["translations"]["leftFootIK"]
+    in_segment = [k for k in keys if 0 <= k[0] <= 10]
+    assert len(in_segment) == 11
+    values = {tuple(round(v, 6) for v in k[1:]) for k in in_segment}
+    assert len(values) == 1
+    assert next(iter(values)) == pytest.approx((0.0, 0.5, 0.0))
+    assert out["contacts"][0]["locked_chunks"][0][2] == pytest.approx([0.5, 0.5, 0.0])
+
+
+def test_foot_lock_eliminates_slide():
+    src, tgt = make_profiles(1.0)
+    motion = make_canonical(ik_keys=[[0, 0.0, 0.0, 0.0], [10, 0.2, 0.0, 0.0]])
+    before = contact_slide_stats(motion, src)
+    out = retarget_motion(motion, src, tgt, config={"foot_lock": {"clamp_unreachable": True}})
+    after = contact_slide_stats(out, tgt)
+    assert before["mean_slide"] > 0.0
+    assert after["mean_slide"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_high_drift_segment_is_not_locked():
+    """源脚在一个窗口内移动太多，说明是迈步，不应硬锁。"""
+    src, tgt = make_profiles(1.0)
+    motion = make_canonical(ik_keys=[[0, 0.0, 0.0, 0.0], [10, 5.0, 0.0, 0.0]])
+    out = retarget_motion(motion, src, tgt)
+    assert out["meta"]["retarget"]["locked"] == 0
+    assert out["meta"]["retarget"]["skipped_drift"] == 1
+
+
+def test_unreachable_contact_is_clamped():
+    src, tgt = make_profiles(1.0)
+    motion = make_canonical(contact_pos=(0.5, 0.0, 30.0), ik_keys=[[0, 0.0, 0.0, 30.0]])
+    out = retarget_motion(
+        motion, src, tgt, config={"foot_lock": {"clamp_unreachable": True}}
+    )
+    assert out["meta"]["retarget"]["clamped"] == 1
+    locked = out["contacts"][0]["locked_chunks"][0][2]
+    hip = tgt["rest"]["左足"]["head"]
+    hip = (hip[0], hip[1], hip[2] + 1.0)  # root 的 z 位移
+    leg_len = ((0.5 ** 2 + 2.5 ** 2) ** 0.5) * 2
+    assert ((locked[0] - hip[0]) ** 2 + (locked[1] - hip[1]) ** 2 + (locked[2] - hip[2]) ** 2) ** 0.5 <= leg_len * 0.99
+
+
+def test_missing_ik_is_skipped():
+    src, tgt = make_profiles(1.0)
+    tgt["map"].pop("leftFootIK")
+    out = retarget_motion(make_canonical(), src, tgt)
+    assert out["meta"]["retarget"]["skipped_no_ik"] == 1
+    assert out["meta"]["retarget"]["locked"] == 0

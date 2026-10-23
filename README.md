@@ -5,8 +5,8 @@
 把「为 A 体型编排的 VMD，套到 B 体型上」这件事，从**逐帧手调**变成
 **可复现的管线 + 可读的报告**。
 
-> 状态：**M0 数据层完成**（v0.0.2）。VMD/PMX 解析、skeleton profile、
-> canonical motion 与 VMD 回写已可用；身体重定向从 M1 开始。
+> 状态：**M1 进行中**（v0.0.2）。M0 数据层已完成；M1 已完成比例缩放与
+> 脚锁（stage 1/4），rest-relative 旋转、手臂 IK、间隙与平滑尚未接入。
 > 进度见 [docs/PLAN.md](docs/PLAN.md)，实测报告见 `docs/reports/`。
 
 ---
@@ -79,8 +79,8 @@ python -m mmd_retarget.cli inspect motion.vmd -p profile.json -o motion.json
 python -m mmd_retarget.cli retarget motion.json -s src.json -t dst.json -o out.vmd
 ```
 
-> `retarget` 目前只做语义映射与回写，不做 rest-relative 适配、脚锁和 IK；
-> 输出用于验证数据闭环，不是最终可用的重定向结果。
+> `retarget` 目前做比例缩放 + 分窗脚锁；rest-relative 旋转、手臂 IK、
+> 间隙约束与时间平滑尚未接入，输出仍不是最终可用结果。
 
 ## 技术栈
 
