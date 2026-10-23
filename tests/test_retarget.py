@@ -155,3 +155,42 @@ def test_rotation_passthrough_without_target_chain():
     joints = {"leftUpperArm": [[0, 0.1, 0.2, 0.3, 0.9]]}
     out, split = retarget_rotations(joints, {"map": {"leftUpperArm": "左腕"}})
     assert out == joints and split == []
+
+
+def test_smooth_series_limits_step():
+    from mmd_retarget.retarget import smooth_series
+
+    vals = [(0.0, 0.0, 0.0)] * 10 + [(1.0, 0.0, 0.0)] * 10
+    out = smooth_series(vals, window=1, max_rate=0.2)
+    max_step = max(((out[i][0] - out[i - 1][0]) ** 2) ** 0.5 for i in range(1, len(out)))
+    assert max_step <= 0.2 + 1e-9
+    # 首尾仍然收敛到原值
+    assert out[0] == pytest.approx((0.0, 0.0, 0.0))
+    assert out[-1] == pytest.approx((1.0, 0.0, 0.0))
+
+
+def test_foot_lock_smoothing_reduces_jump():
+    from mmd_retarget.retarget import smooth_foot_lock
+
+    motion = {
+        "frames": 41,
+        "contacts": [
+            {"start": 0, "end": 10, "effector": "leftFoot", "locked_chunks": [[0, 10, [0, 0, 0]]]},
+            {"start": 11, "end": 30, "effector": "leftFoot", "locked_chunks": [[11, 30, [2, 0, 0]]]},
+        ],
+        "translations": {
+            "leftFootIK": [
+                [0, 0.0, 0.0, 0.0],
+                [10, 0.0, 0.0, 0.0],
+                [11, 2.0, 0.0, 0.0],
+                [30, 2.0, 0.0, 0.0],
+                [31, 0.0, 0.0, 0.0],
+                [40, 0.0, 0.0, 0.0],
+            ]
+        },
+    }
+    profile = {"map": {"leftFootIK": "左足ＩＫ"}, "rest": {"左足ＩＫ": {"head": [0, 0, 0]}}}
+    stats = smooth_foot_lock(motion, profile, {"smoothing": {"window": 1, "max_rate_m_per_frame": 0.01}})
+    assert stats["series"] == 1
+    assert stats["max_after"] < stats["max_before"]
+    assert stats["max_after"] <= 0.13 + 1e-6

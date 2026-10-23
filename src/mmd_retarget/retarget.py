@@ -46,6 +46,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # 粗略的人体身高，用于米制阈值换算。
         "assumed_height_m": 1.6,
     },
+    "smoothing": {
+        # 实验结论：全局限速会把锁定窗口内部也拖走（见报告 08），暂默认关闭。
+        "enabled": False,
+        "window": 2,
+        "max_rate_m_per_frame": 0.01,
+    },
 }
 
 
@@ -300,6 +306,7 @@ def retarget_motion(
         if out.get("frames")
         else 0.0
     )
+    stats["smoothing"] = smooth_foot_lock(out, target, cfg)
 
     out["meta"]["retarget"] = stats
     return out
@@ -349,6 +356,94 @@ def contact_slide_stats(motion: dict, profile: dict) -> dict:
         "max_drift": max(drifts) if drifts else 0.0,
         "coverage": covered / (frames * 2) if frames else 0.0,
     }
+
+
+def smooth_series(
+    values: list[tuple[float, float, float]],
+    *,
+    window: int = 2,
+    max_rate: float | None = None,
+) -> list[tuple[float, float, float]]:
+    """对三维序列做盒式平均 + 双向限速。
+
+    盒式平均只影响窗口边界；常量段内部保持不变。限速是“每帧最多移动
+    ``max_rate``”，用前向 + 后向两遍避免整体滞后。
+    """
+    if not values:
+        return []
+    w = max(1, int(window))
+    n = len(values)
+    out: list[tuple[float, float, float]] = []
+    for i in range(n):
+        lo = max(0, i - w)
+        hi = min(n, i + w + 1)
+        k = hi - lo
+        out.append(
+            (
+                sum(values[j][0] for j in range(lo, hi)) / k,
+                sum(values[j][1] for j in range(lo, hi)) / k,
+                sum(values[j][2] for j in range(lo, hi)) / k,
+            )
+        )
+    if max_rate is not None and max_rate > 0:
+        for i in range(1, n):
+            out[i] = _limit_step(out[i - 1], out[i], max_rate)
+        for i in range(n - 2, -1, -1):
+            out[i] = _limit_step(out[i + 1], out[i], max_rate)
+    return out
+
+
+def _limit_step(
+    anchor: tuple[float, float, float], point: tuple[float, float, float], max_rate: float
+) -> tuple[float, float, float]:
+    d = math.dist(anchor, point)
+    if d <= max_rate or d <= 1e-12:
+        return point
+    k = max_rate / d
+    return (
+        anchor[0] + (point[0] - anchor[0]) * k,
+        anchor[1] + (point[1] - anchor[1]) * k,
+        anchor[2] + (point[2] - anchor[2]) * k,
+    )
+
+
+def smooth_foot_lock(motion: dict, profile: dict, config: dict) -> dict:
+    """平滑被锁定的足 IK 位移序列。"""
+    cfg = config.get("smoothing", {})
+    if not cfg.get("enabled", True):
+        return {"enabled": False}
+    window = int(cfg.get("window", 2))
+    assumed = float(config.get("foot_lock", {}).get("assumed_height_m", 1.6))
+    height = _model_height(profile) or assumed
+    max_rate = float(cfg.get("max_rate_m_per_frame", 0.01)) * height / assumed
+
+    frames = int(motion.get("frames", 0))
+    translations = motion.get("translations", {})
+    mapping = profile.get("map", {})
+    locked_sems = set()
+    for c in motion.get("contacts", []):
+        if c.get("locked_chunks"):
+            eff = c.get("effector", "")
+            locked_sems.add("leftFootIK" if eff == "leftFoot" else "rightFootIK")
+
+    stats = {"enabled": True, "series": 0, "max_before": 0.0, "max_after": 0.0, "rate": round(max_rate, 6)}
+    for sem in locked_sems:
+        keys = translations.get(sem)
+        if not keys:
+            continue
+        dense = [sample_keys(keys, f, quat=False) for f in range(frames)]
+        before = max(
+            (math.dist(dense[i], dense[i - 1]) for i in range(1, frames)), default=0.0
+        )
+        smooth = smooth_series(dense, window=window, max_rate=max_rate)
+        after = max(
+            (math.dist(smooth[i], smooth[i - 1]) for i in range(1, frames)), default=0.0
+        )
+        translations[sem] = [[float(f), *smooth[f]] for f in range(frames)]
+        stats["series"] += 1
+        stats["max_before"] = max(stats["max_before"], before)
+        stats["max_after"] = max(stats["max_after"], after)
+    return stats
 
 
 def _sample(keys: list[list[float]], frame: int) -> tuple[float, float, float]:
