@@ -236,6 +236,88 @@ def _chain_to(profile: dict, bone: str) -> list[str]:
     return chain
 
 
+def forward_positions(
+    profile: dict,
+    joints: dict,
+    translations: dict,
+    root: dict,
+    frames: int,
+    targets: list[str],
+) -> dict[str, list[tuple[float, float, float]]]:
+    """对指定骨骼做源骨架 FK，返回每帧世界坐标（PMX 坐标系）。
+
+    模型假设：
+
+    - MMD 局部旋转按 ``world_q = parent_q * local_q`` 复合；
+    - 骨骼 rest 朝向视为单位矩阵（忽略 roll）；
+    - root 的位移在父空间，叠加到 root 的 rest head 上。
+
+    这是 M0/M1 的**近似** FK。它必须定期与 Blender 的真实 pose matrix
+    对拍；对不上时以 Blender 为准，本函数只用于纯 Python 的快速预估。
+    """
+    rest = profile.get("rest", {})
+    mapping = profile.get("map", {})
+    targets = [t for t in targets if t in rest]
+    if not rest or not targets:
+        return {t: [] for t in targets}
+
+    order: list[str] = []
+    for target in targets:
+        for bone in _chain_to(profile, target):
+            if bone not in order:
+                order.append(bone)
+
+    bone_to_sem = _reverse_map(profile)
+    samples: dict[str, list] = {}
+    for bone in order:
+        sem = bone_to_sem.get(bone)
+        keys = joints.get(sem) if sem else None
+        if keys is None and bone in joints:
+            keys = joints[bone]
+        samples[bone] = keys or []
+
+    root_bone = mapping.get("root", "センター")
+    root_pos_keys = root.get("pos", [])
+    root_rot_keys = root.get("rot", [])
+    out: dict[str, list[tuple[float, float, float]]] = {t: [] for t in targets}
+
+    for f in range(frames):
+        world_q: dict[str, tuple[float, float, float, float]] = {}
+        world_p: dict[str, tuple[float, float, float]] = {}
+        for bone in order:
+            head = tuple(rest[bone]["head"])
+            parent = rest[bone].get("parent")
+            local_q = sample_keys(samples[bone], f, quat=True) if samples[bone] else _IDENTITY
+            trans = (0.0, 0.0, 0.0)
+            if bone == root_bone:
+                trans = sample_keys(root_pos_keys, f, quat=False)  # type: ignore[assignment]
+                local_q = sample_keys(root_rot_keys, f, quat=True)  # type: ignore[assignment]
+            elif bone in translations:
+                trans = sample_keys(translations[bone], f, quat=False)  # type: ignore[assignment]
+
+            if parent and parent in world_q:
+                pq = world_q[parent]
+                pp = world_p[parent]
+                delta = (
+                    head[0] - rest[parent]["head"][0],
+                    head[1] - rest[parent]["head"][1],
+                    head[2] - rest[parent]["head"][2],
+                )
+                rd = qrot(pq, delta)
+                rt = qrot(pq, trans)
+                world_p[bone] = (pp[0] + rd[0] + rt[0], pp[1] + rd[1] + rt[1], pp[2] + rd[2] + rt[2])
+                wq = qmul(pq, local_q)
+            else:
+                world_p[bone] = (head[0] + trans[0], head[1] + trans[1], head[2] + trans[2])
+                wq = local_q
+            n = math.sqrt(sum(v * v for v in wq)) or 1.0
+            world_q[bone] = (wq[0] / n, wq[1] / n, wq[2] / n, wq[3] / n)
+
+        for target in targets:
+            out[target].append(world_p[target])
+    return out
+
+
 def detect_contacts(
     profile: dict,
     joints: dict,
@@ -247,14 +329,9 @@ def detect_contacts(
 ) -> list[dict]:
     """用源骨架 FK 检测脚部接触段。
 
-    简化假设（重要）：
-
-    - MMD 的局部旋转按 ``world = parent_world * local`` 复合；
-    - 忽略 bone roll；PMX 的 rest 朝向差异在 M0 不建模；
-    - 只计算到脚踝的链，不做全骨架 FK。
-
-    这些假设足以得到“脚是否在地面附近”的初值，但**不能**直接用于最终
-    接触锁定；M1 会在 Blender 里用真实矩阵重算。
+    判定只用高度（局部最低点 + 身高比例）；速度作为 ``mean_slide`` /
+    ``max_slide`` 记录，不做否决——源动作本来就可能滑步，滑多少正是 M1
+    脚锁要处理的量。
     """
     cfg = {**CONTACT_DEFAULTS, **(config or {})}
     mapping = profile.get("map", {})
@@ -269,62 +346,39 @@ def detect_contacts(
     if not eff:
         return []
 
-    # 预采样每条链上的旋转，避免逐帧二分。
-    chains = {name: _chain_to(profile, bone) for name, bone in eff.items()}
-    # 必须按父→子顺序计算；set 的迭代顺序不可依赖。
-    order: list[str] = []
-    for chain in chains.values():
-        for bone in chain:
-            if bone not in order:
-                order.append(bone)
-    all_bones = set(order)
-    bone_to_sem = _reverse_map(profile)
-    samples: dict[str, list] = {}
-    for bone in order:
-        sem = bone_to_sem.get(bone)
-        keys = joints.get(sem) if sem else None
-        if keys is None and bone in joints:
-            keys = joints[bone]
-        samples[bone] = keys or []
+    # 优先用足 IK 的目标位置：MMD 的腿是 IK 驱动，VMD 里腿骨旋转往往
+    # 不足以还原脚踝位置。IK 骨 rest head + 位移键与 Blender 的实测脚踝
+    # 误差约 1–2 mm（见 docs/reports/05）。
+    positions: dict[str, list[tuple[float, float, float]]] = {}
+    sources: dict[str, str] = {}
+    for name, bone in eff.items():
+        ik_sem = {
+            "leftFoot": "leftFootIK",
+            "rightFoot": "rightFootIK",
+        }.get(name)
+        ik_bone = mapping.get(ik_sem) if ik_sem else None
+        keys = translations.get(ik_sem) if ik_sem else None
+        if ik_bone and ik_bone in rest and keys:
+            head = rest[ik_bone]["head"]
+            positions[name] = [
+                (
+                    head[0] + sample_keys(keys, f, quat=False)[0],
+                    head[1] + sample_keys(keys, f, quat=False)[1],
+                    head[2] + sample_keys(keys, f, quat=False)[2],
+                )
+                for f in range(frames)
+            ]
+            sources[name] = "foot_ik"
+        else:
+            sources[name] = "fk"
 
-    translations_by_bone = dict(translations)
-    root_bone = mapping.get("root", "センター")
-    root_pos_keys = root.get("pos", [])
-    root_rot_keys = root.get("rot", [])
-
-    positions: dict[str, list[tuple[float, float, float]]] = {k: [] for k in eff}
-    for f in range(frames):
-        world_q: dict[str, tuple[float, float, float, float]] = {}
-        world_p: dict[str, tuple[float, float, float]] = {}
-        for bone in order:
-            head = tuple(rest[bone]["head"])
-            parent = rest[bone].get("parent")
-            local_q = sample_keys(samples[bone], f, quat=True) if samples[bone] else _IDENTITY
-            trans = (0.0, 0.0, 0.0)
-            if bone == root_bone:
-                trans = sample_keys(root_pos_keys, f, quat=False)  # type: ignore[assignment]
-                local_q = sample_keys(root_rot_keys, f, quat=True)  # type: ignore[assignment]
-            elif bone in translations_by_bone:
-                trans = sample_keys(translations_by_bone[bone], f, quat=False)  # type: ignore[assignment]
-
-            if parent and parent in world_q:
-                pq = world_q[parent]
-                pp = world_p[parent]
-                delta = (head[0] - rest[parent]["head"][0],
-                         head[1] - rest[parent]["head"][1],
-                         head[2] - rest[parent]["head"][2])
-                rd = qrot(pq, delta)
-                rt = qrot(pq, trans)
-                world_p[bone] = (pp[0] + rd[0] + rt[0], pp[1] + rd[1] + rt[1], pp[2] + rd[2] + rt[2])
-                wq = qmul(pq, local_q)
-            else:
-                world_p[bone] = (head[0] + trans[0], head[1] + trans[1], head[2] + trans[2])
-                wq = local_q
-            n = math.sqrt(sum(v * v for v in wq)) or 1.0
-            world_q[bone] = (wq[0] / n, wq[1] / n, wq[2] / n, wq[3] / n)
-
-        for name, bone in eff.items():
-            positions[name].append(world_p[bone])
+    fallback = [n for n in eff if n not in positions]
+    if fallback:
+        pos_by_bone = forward_positions(
+            profile, joints, translations, root, frames, targets=[eff[n] for n in fallback]
+        )
+        for name in fallback:
+            positions[name] = pos_by_bone[eff[name]]
 
     margin = cfg["height_margin"] * height
     contacts: list[dict] = []
@@ -352,16 +406,22 @@ def detect_contacts(
                     seg_start = f
                 last_contact = f
             elif seg_start is not None and f - last_contact > cfg["max_gap"]:
-                _append_contact(contacts, name, pts, seg_start, last_contact, cfg, rest_y + margin)
+                _append_contact(
+                    contacts, name, pts, seg_start, last_contact, cfg, rest_y + margin,
+                    sources[name],
+                )
                 seg_start = None
         if seg_start is not None:
-            _append_contact(contacts, name, pts, seg_start, last_contact, cfg, rest_y + margin)
+            _append_contact(
+                contacts, name, pts, seg_start, last_contact, cfg, rest_y + margin,
+                sources[name],
+            )
 
     contacts.sort(key=lambda c: (c["start"], c["effector"]))
     return contacts
 
 
-def _append_contact(contacts, name, pts, start, end, cfg, threshold):
+def _append_contact(contacts, name, pts, start, end, cfg, threshold, source="fk"):
     if end - start + 1 < cfg["min_frames"]:
         return
     window = pts[start : end + 1]
@@ -377,6 +437,7 @@ def _append_contact(contacts, name, pts, start, end, cfg, threshold):
             "mean_slide": round(sum(slides) / len(slides), 6) if slides else 0.0,
             "max_slide": round(max(slides), 6) if slides else 0.0,
             "threshold": round(threshold, 6),
+            "source": source,
         }
     )
 

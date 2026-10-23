@@ -137,3 +137,31 @@ def test_no_profile_feet_returns_no_contacts():
     p = contact_profile()
     p["map"].pop("leftFoot")
     assert detect_contacts(p, {}, {}, {"pos": [], "rot": []}, 10) == []
+
+
+def test_contacts_prefer_foot_ik_target():
+    """腿由 IK 驱动时，必须用 足IK 的位移，而不是腿骨 FK。"""
+    p = {
+        "model": "IKTest",
+        "map": {"root": "センター", "leftFoot": "左足", "leftFootIK": "左足ＩＫ"},
+        "rest": {
+            "センター": {"head": [0, 0, 0], "parent": None},
+            "左足": {"head": [0, 1, 0], "parent": "センター"},
+            "左足ＩＫ": {"head": [0, 1, 0], "parent": "センター"},
+        },
+    }
+    translations = {
+        "leftFootIK": [
+            [0, 0, 0, 0],
+            [10, 0, 0, 0],
+            [11, 0, 2, 0],
+            [20, 0, 2, 0],
+            [21, 0, 0, 0],
+            [30, 0, 0, 0],
+        ]
+    }
+    contacts = detect_contacts(p, {}, translations, {"pos": [], "rot": []}, 31)
+    assert contacts
+    assert all(c["source"] == "foot_ik" for c in contacts)
+    covered = {f for c in contacts for f in range(c["start"], c["end"] + 1)}
+    assert 0 in covered and 30 in covered and 15 not in covered
