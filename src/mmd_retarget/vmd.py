@@ -162,6 +162,8 @@ class Vmd:
     #: 解码名 → 原始 15 字节骨名/morph 名。用于保留第三方文件里的 0xFD 填充。
     bone_names_raw: dict[str, bytes] = field(default_factory=dict)
     morph_names_raw: dict[str, bytes] = field(default_factory=dict)
+    #: writer 在换模型时丢弃的骨名（不参与序列化，仅供 CLI 报告）。
+    dropped_bones: list[str] = field(default_factory=list)
     #: 相机及之后的 section 是否解析成功。False 表示 ``trailer`` 从
     #: “camera count” 开始，写回时不能再追加四个数量字段。
     sections_parsed: bool = True

@@ -16,9 +16,11 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .canonical import build_canonical, load_canonical, save_canonical
 from .pmx import PmxError, read_pmx
-from .skeleton import write_profile
-from .vmd import VmdError, read_vmd
+from .skeleton import load_profile, write_profile
+from .vmd import VmdError, read_vmd, write_vmd
+from .writer import canonical_to_vmd
 
 
 def cmd_stub(args: argparse.Namespace) -> int:
@@ -48,6 +50,46 @@ def cmd_skeleton(args: argparse.Namespace) -> int:
     print(f"colliders : {stats['colliders']}")
     if profile["map_missing"]:
         print(f"missing   : {', '.join(profile['map_missing'])}")
+    print(f"written   : {args.out}")
+    return 0
+
+
+def cmd_retarget(args: argparse.Namespace) -> int:
+    """M0：canonical → 目标骨架的 pass-through 回写。
+
+    真正的 rest/比例适配、脚锁、IK 在 M1 接入；这里只验证数据层闭环。
+    """
+    try:
+        motion = load_canonical(args.motion)
+        source = load_profile(args.source)
+        target = load_profile(args.target)
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if motion.get("schema") != 1:
+        print(f"error: unsupported canonical schema: {motion.get('schema')}", file=sys.stderr)
+        return 2
+
+    out = canonical_to_vmd(motion, target)
+    try:
+        write_vmd(out, args.out)
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    missing = [
+        sem for sem in motion.get("joints", {}) if sem not in target.get("map", {})
+    ]
+    print(f"canonical : {args.motion}")
+    print(f"source    : {source.get('model', '?')} -> target: {target.get('model', '?')}")
+    print(f"keys      : {len(out.bone_frames):,} bone / {len(out.morph_frames):,} morph")
+    print(f"morphs    : {len(out.morphs)}")
+    if out.dropped_bones:
+        print(f"dropped   : {len(out.dropped_bones)} extra bones (目标模型没有)")
+    if missing:
+        print(f"unmapped  : {len(missing)} semantics 在目标 profile 中缺失")
+    print("note      : M0 pass-through，未做 rest-relative / 脚锁 / IK")
     print(f"written   : {args.out}")
     return 0
 
@@ -91,6 +133,29 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     except VmdError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+
+    if getattr(args, "out", None):
+        if not args.profile:
+            print("error: --out 需要 --profile（接触段/语义映射依赖骨架档案）", file=sys.stderr)
+            return 2
+        try:
+            profile = load_profile(args.profile)
+        except (OSError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        canonical = build_canonical(
+            motion,
+            profile,
+            source_path=str(path),
+            profile_path=args.profile,
+        )
+        save_canonical(canonical, args.out)
+        meta = canonical["meta"]
+        print(f"canonical : {args.out}")
+        print(f"joints    : {meta['joints']} semantic / {meta['extra_bones']} extra bones")
+        print(f"morphs    : {meta['morphs']}")
+        print(f"contacts  : {meta['contacts']}")
+        print(f"frames    : {canonical['frames']} ({canonical['frames'] / canonical['fps']:.1f} s)")
 
     info = motion.summary()
     info["file"] = str(path)
@@ -136,6 +201,8 @@ def build_parser() -> argparse.ArgumentParser:
     i = sub.add_parser("inspect", help="parse a VMD/PMX and print a summary")
     i.add_argument("file")
     i.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    i.add_argument("-o", "--out", default=None, help="write canonical_motion.json")
+    i.add_argument("-p", "--profile", default=None, help="skeleton profile for --out")
     i.set_defaults(func=cmd_inspect)
 
     r = sub.add_parser("retarget", help="retarget canonical motion to a target skeleton")
@@ -144,7 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("-t", "--target", required=True)
     r.add_argument("-o", "--out", required=True)
     r.add_argument("-c", "--config", default=None)
-    r.set_defaults(func=cmd_stub)
+    r.set_defaults(func=cmd_retarget)
 
     ph = sub.add_parser("physics", help="bake passive physics (skirt/hair/sleeves)")
     ph.add_argument("-c", "--config", default=None)

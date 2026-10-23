@@ -265,6 +265,7 @@ def build_profile(pmx: Pmx) -> dict:
         "rest": rest,
         "limits": limits,
         "colliders": colliders,
+        "morphs": [m.name for m in pmx.morphs],
         "stats": {
             "bones": len(pmx.bones),
             "mapped": len(mapping),
@@ -272,6 +273,7 @@ def build_profile(pmx: Pmx) -> dict:
             "map_coverage": round(len(mapping) / len(SEMANTIC_SPECS), 4),
             "limits": len(limits),
             "colliders": len(colliders),
+            "morphs": len(pmx.morphs),
         },
     }
 

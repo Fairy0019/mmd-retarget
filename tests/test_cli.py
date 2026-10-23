@@ -22,7 +22,7 @@ def test_cli_parses_known_commands():
 
 
 def test_cli_stub_runs(capsys):
-    assert main(["retarget", "motion.json", "-s", "a", "-t", "b", "-o", "c.vmd"]) == 0
+    assert main(["physics"]) == 0
     out = capsys.readouterr().out
     assert "not implemented" in out
 
@@ -52,3 +52,87 @@ def test_inspect_vmd(tmp_path, capsys):
     assert info["bones"] == 1
     assert info["morph_frames"] == 1
     assert info["model"] == "テスト"
+
+
+def _profile_dict() -> dict:
+    return {
+        "model": "Test",
+        "map": {"root": "センター", "spine": "上半身"},
+        "rest": {
+            "センター": {"head": [0, 0, 0], "parent": None},
+            "上半身": {"head": [0, 5, 0], "parent": "センター"},
+        },
+        "morphs": ["まばたき"],
+    }
+
+
+def test_inspect_writes_canonical(tmp_path, capsys):
+    import json
+
+    from mmd_retarget.vmd import BoneFrame, MorphFrame, Vmd, write_vmd
+
+    vmd_path = tmp_path / "m.vmd"
+    write_vmd(
+        Vmd(
+            model_name="Test",
+            bone_frames=[BoneFrame("センター", 0), BoneFrame("センター", 30, (0, 1, 0))],
+            morph_frames=[MorphFrame("まばたき", 30, 1.0)],
+        ),
+        vmd_path,
+    )
+    profile_path = tmp_path / "p.json"
+    profile_path.write_text(json.dumps(_profile_dict()), encoding="utf-8")
+    out = tmp_path / "motion.json"
+
+    assert main(["inspect", str(vmd_path), "-p", str(profile_path), "-o", str(out)]) == 0
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert body["schema"] == 1
+    assert body["frames"] == 31
+    assert body["root"]["pos"][-1][1:] == [0.0, 1.0, 0.0]
+    assert "spine" in body["joints"] or body["joints"] == {}
+    assert "canonical" in capsys.readouterr().out
+
+
+def test_inspect_out_requires_profile(tmp_path, capsys):
+    from mmd_retarget.vmd import Vmd, write_vmd
+
+    vmd_path = tmp_path / "m.vmd"
+    write_vmd(Vmd(model_name="Test"), vmd_path)
+    assert main(["inspect", str(vmd_path), "-o", str(tmp_path / "x.json")]) == 2
+    assert "--profile" in capsys.readouterr().err
+
+
+def test_retarget_pass_through(tmp_path, capsys):
+    import json
+
+    from mmd_retarget.canonical import build_canonical, save_canonical
+    from mmd_retarget.vmd import BoneFrame, Vmd, parse_vmd
+
+    profile = _profile_dict()
+    src = Vmd(
+        model_name="Test",
+        bone_frames=[BoneFrame("センター", 0), BoneFrame("センター", 5, (0, 0.5, 0))],
+    )
+    canonical = build_canonical(src, profile, detect=False)
+    motion_path = tmp_path / "motion.json"
+    save_canonical(canonical, motion_path)
+    profile_path = tmp_path / "p.json"
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+    out_path = tmp_path / "out.vmd"
+
+    assert main(
+        [
+            "retarget",
+            str(motion_path),
+            "-s",
+            str(profile_path),
+            "-t",
+            str(profile_path),
+            "-o",
+            str(out_path),
+        ]
+    ) == 0
+    out = parse_vmd(out_path.read_bytes())
+    assert out.model_name == "Test"
+    assert len(out.bone_frames) == 2
+    assert "pass-through" in capsys.readouterr().out
