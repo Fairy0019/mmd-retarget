@@ -1,4 +1,4 @@
-# Python
+﻿# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -13,7 +13,10 @@ venv/
 htmlcov/
 
 # 编辑器
-.vscode/
+# 编辑器（保留团队配置）
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
 .idea/
 *.swp
 

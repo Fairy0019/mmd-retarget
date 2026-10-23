@@ -55,6 +55,7 @@ VMD + 源骨架档案 + 目标骨架档案
 | [docs/VISION.md](docs/VISION.md) | 构想：问题、原则、分层设计 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 模块、数据模型、算法要点 |
 | [docs/PLAN.md](docs/PLAN.md) | 里程碑 M0–M4 与验收标准 |
+| [docs/STEPS.md](docs/STEPS.md) | 开发步骤拆解（12 步、依赖、验收） |
 
 ## 快速开始（暂不可用）
 
