@@ -78,7 +78,9 @@ M1/M2 已完成（见 `docs/reports/16`）。接下来：
 - 依赖保持最小：标准库 + numpy；新增依赖需在提交说明里写理由；
 - 许可证 GPL-3.0-or-later，新文件保留 SPDX 标识；
 - 不要改 `docs/VISION.md` 的定位与非目标，除非先开 issue 讨论；
-- 每个阶段提交一份 `docs/reports/NN-*.md`，写清实测数字与风险。
+- 每个阶段提交一份 `docs/reports/NN-*.md`，写清实测数字与风险；
+- 修完一个 bug，建议顺手补一份 `docs/bugs/NNN-*.md` 短复盘（现象 / 根因 /
+  改法 / 波及面），几段话即可，不强制长篇。模板见 `docs/bugs/README.md`。
 
 ## 5. 验收口径（全项目）
 
