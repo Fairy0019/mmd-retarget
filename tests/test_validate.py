@@ -84,3 +84,35 @@ def test_regression_ok():
     assert regression_ok(d, max_new=2, max_worse=1) is True
     assert regression_ok(d, max_new=1) is False
     assert regression_ok(d, max_worse=0) is False
+
+def test_pick_visibility_points_topk_distinct():
+    from mmd_retarget.validate import pick_visibility_points
+
+    pts = [(5.0, (0, 0, 0)), (4.0, (0, 0, 0)), (3.0, (1, 0, 0)), (2.0, (2, 0, 0))]
+    picked = pick_visibility_points(pts, 2)
+    assert picked == [(0, 0, 0), (1, 0, 0)]
+
+
+def test_visibility_from_ratios():
+    from mmd_retarget.validate import visibility_from_ratios
+
+    assert visibility_from_ratios({}) == ("unknown", None)
+    assert visibility_from_ratios({"a": 1.0}) == ("yes", 1.0)
+    assert visibility_from_ratios({"a": 0.4})[0] == "partial"
+    assert visibility_from_ratios({"a": 0.0})[0] == "no"
+    assert visibility_from_ratios({"a": 0.2, "b": 0.9}) == ("yes", 0.9)
+
+
+def test_contact_sheet_html(tmp_path):
+    from mmd_retarget.validate import write_contact_sheet
+
+    thumbs = tmp_path / "thumbs"
+    thumbs.mkdir()
+    (thumbs / "clip_00001.png").write_bytes(b"not-a-real-png")
+    records = [make_record(1, "leftArm", "torso", 12.0, visible="yes", visible_ratio=0.5)]
+    out = tmp_path / "sheet.html"
+    n = write_contact_sheet(records, thumbs, out)
+    html = out.read_text(encoding="utf-8")
+    assert n == 1
+    assert "clip_00001.png" in html
+    assert "leftArm" in html and "12.0 mm" in html

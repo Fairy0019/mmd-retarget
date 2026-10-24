@@ -37,8 +37,11 @@ def main() -> int:
     ap.add_argument("--max-pairs", type=int, default=200)
     ap.add_argument("--no-markers", action="store_true")
     ap.add_argument("--visibility", action="store_true")
-    ap.add_argument("--camera", default=None)
+    ap.add_argument("--visibility-points", type=int, default=3)
+    ap.add_argument("--camera", default=None, help="camera name(s), comma separated")
     ap.add_argument("--thumbnails", default=None)
+    ap.add_argument("--contact-sheet", default=None)
+    ap.add_argument("--parts-config", default=None)
     args = ap.parse_args(argv)
 
     run_validation(
@@ -53,7 +56,10 @@ def main() -> int:
         markers=not args.no_markers,
         visibility=args.visibility,
         camera=args.camera,
+        visibility_points=args.visibility_points,
         thumbnails=args.thumbnails,
+        contact_sheet=args.contact_sheet,
+        parts_config=args.parts_config,
     )
     return 0
 

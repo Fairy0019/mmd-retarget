@@ -1,9 +1,9 @@
 # 交接说明
 
-> 状态：**v0.0.2 · M1 stage 3/4 + M2 stage 1/2**。M0 数据层完成；
-> M1 已完成比例缩放、承重判断、分窗脚锁、锚定平滑、脊柱链、手臂两骨 IK；
-> M2 已完成 Blender BVH 穿模检测、severity、CSV/JSON、可见性、high 帧
-> 缩略图与回归门槛。下一步是间隙约束、骨盆补偿、contact sheet。
+> 状态：**v0.0.3 · M0/M1/M2 完成**（骨盆补偿仅诊断）。
+> M1：比例、承重、分窗脚锁、锚定平滑、脊柱链、手臂两骨 IK、间隙约束、twist。
+> M2：BVH 深度、severity、回归门槛、多机位/多点可见性、缩略图、contact sheet、
+> 可配置部位规则。下一步是 **M3 被动件物理**。
 
 ## 1. 环境
 
@@ -27,9 +27,12 @@ src/mmd_retarget/
 ├── pmx.py        PMX 2.0/2.1 最小集，骨骼/权重/材质/morph
 ├── skeleton.py   语义映射 + profile（rest/limits/colliders/morphs）
 ├── canonical.py  VMD → canonical，接触段检测（源骨架 FK）
+├── parts.py      部位规则（左右前缀/后缀、材质、pair）
+├── validate.py   severity / CSV / diff / contact sheet
+├── validate_blender.py  BVH 深度 + 多机位可见性 + 缩略图
 ├── writer.py     canonical → 目标 VMD
-├── retarget.py   比例缩放 / 分窗脚锁 / 脊柱链拆分
-└── cli.py        inspect / skeleton / retarget（physics/validate 仍 stub）
+├── retarget.py   比例 / 脚锁 / 脊柱链 / 手臂 IK / 间隙 / twist
+└── cli.py        inspect / skeleton / retarget / validate
 ```
 
 实测数据（详见 `docs/reports/01`–`03`）：
@@ -48,19 +51,15 @@ src/mmd_retarget/
 - 可见性：288/1,051 可见，37 条可见 high 全部是腿–裙（报告 12）；
 - 缩略图/回归：43 张 high 缩略图；`--max-new/--max-worse` 可让 CI 失败（报告 13）。
 
-## 3. 下一步（M1 stage 3）
+## 3. 下一步（M3 被动件物理）
 
-按优先级：
+M1/M2 已完成（见 `docs/reports/16`）。接下来：
 
-1. **承重判断**：用骨盆投影 + 另一只脚状态决定锁哪只脚，提高可锁覆盖率；
-2. **骨盆补偿**：49 个“脚够不到”的窗口通过移动 root 解决，而不是跳过；
-3. **锚定式平滑**：锁定窗口内不动，只在未锁定段做过渡；对修正量做
-   膨胀→平均→限速（不要重蹈报告 08 的覆辙）；
-4. **手臂 IK + 间隙**：手腕轨迹、极向量、胶囊约束（profile 里已有 19 个
-   胶囊，但只是初值）；
-5. **跨模型验证**：需要第二副体型差异明显的 PMX，本地目前没有；
-6. **贝塞尔曲线**：把源 VMD 的 4 个控制点存入 canonical，压掉 7 mm 的
-   插值误差。
+1. **M3 骨链 PBD**：裙 Q 链（15×8）、发骨链，重力/阻尼/距离约束/胶囊碰撞；
+2. **碰撞层**：裙↔腿/躯干/手；发↔躯干/头/肩/翅膀；自碰撞先关；
+3. **稳定性**：300 帧试跑 → 全片烘焙；单帧最大 5–12°，避免“芭蕾裙”；
+4. **骨盆补偿（stage 6）**：先统一“脚世界坐标 = root + IK 位移”的口径，再应用；
+5. **跨模型矩阵**：再找 1–2 副体型差异明显的 PMX，验证比例与 rest/roll。
 
 ### 已知坑（务必先看）
 

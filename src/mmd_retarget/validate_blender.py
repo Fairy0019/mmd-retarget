@@ -4,80 +4,42 @@
 
 必须在 Blender 里运行；纯 Python 部分见 :mod:`mmd_retarget.validate`。
 
-做法
-----
-1. 按材质 + 主导骨骼把网格分成 arm / leg / torso / skirt / hair / wings；
-2. 每帧对每个部位建 BVH；
-3. 对指定部位对做 ``overlap``，再用顶点到对方表面的最近距离估计穿透深度；
-4. 输出 CSV，并可选地在时间轴上打 marker。
+M2 能力
+-------
+- 部位规则可配置（:mod:`mmd_retarget.parts`），不再硬编码日文关键字；
+- BVH ``overlap`` + 顶点到对方表面的最近距离（近似穿透深度）；
+- 多点可见性：取最深的 k 个点，按比例判定 ``yes / partial / no``；
+- 多机位：``--camera a,b``，逐机位记录，任一机位可见即视为可见；
+- 缩略图 + HTML contact sheet；
+- CSV / JSON / 回归门槛（见 CLI）。
 
-这是**近似深度**：用顶点采样而不是精确的 CSG/体积求交，适合定位问题帧，
-不适合做毫米级验收。M2 的验收口径是“人工按报告能在 1 小时内定位 high
-帧”，这个精度足够。
+深度是近似值：用顶点采样而不是精确 CSG，适合定位问题帧，不适合毫米级验收。
 """
 from __future__ import annotations
 
-import math
 import time
 from collections import Counter
 from pathlib import Path
 
-from .validate import make_record, write_csv
+from .parts import classify_bone, classify_material, load_rules, outside_is_bad, part_pairs
+from .validate import (
+    make_record,
+    pick_visibility_points,
+    visibility_from_ratios,
+    write_contact_sheet,
+    write_csv,
+)
 
 __all__ = ["run_validation", "PART_PAIRS"]
 
-PART_PAIRS = (
-    ("leftArm", "torso"),
-    ("rightArm", "torso"),
-    ("leftArm", "skirt"),
-    ("rightArm", "skirt"),
-    ("leftLeg", "skirt"),
-    ("rightLeg", "skirt"),
-    ("hair", "torso"),
-    ("wings", "torso"),
+#: 兼容旧接口的默认部位对；实际以规则文件为准。
+PART_PAIRS = tuple(
+    tuple(p)
+    for p in load_rules()["pairs"]
 )
 
-#: 这些 pair 里“肢体跑到衣物外面”才是穿模。
-OUTSIDE_IS_BAD = {
-    ("leftLeg", "skirt"),
-    ("rightLeg", "skirt"),
-}
 
-_ARM_KEYS = ("肩", "腕", "ひじ", "手首", "手捩")
-_LEG_KEYS = ("足", "ひざ", "つま先")
-_TORSO_KEYS = ("上半身", "下半身", "腰", "首", "頭", "センター", "グルーブ", "全ての親")
-
-
-def _bone_part(name: str) -> str | None:
-    if name.startswith("左"):
-        if any(k in name for k in _ARM_KEYS):
-            return "leftArm"
-        if any(k in name for k in _LEG_KEYS):
-            return "leftLeg"
-    if name.startswith("右"):
-        if any(k in name for k in _ARM_KEYS):
-            return "rightArm"
-        if any(k in name for k in _LEG_KEYS):
-            return "rightLeg"
-    if any(k in name for k in _TORSO_KEYS):
-        return "torso"
-    return None
-
-
-def _material_part(name: str) -> str | None:
-    # 裙内是内衬；腿在裙子内部是正常的，只有穿过**外层**裙面才算穿模。
-    if "裙内" in name:
-        return None
-    if "裙" in name:
-        return "skirt"
-    if "髮" in name or "前髪" in name:
-        return "hair"
-    if "翼" in name:
-        return "wings"
-    return None
-
-
-def _prepare_parts(obj, arm):
+def _prepare_parts(obj, arm, rules):
     """返回 {part: [(i,j,k), ...]}，顶点索引对应原网格。"""
     bone_names = set(arm.data.bones.keys())
     group_name = {g.index: g.name for g in obj.vertex_groups}
@@ -91,22 +53,26 @@ def _prepare_parts(obj, arm):
                 best_name, best_w = name, g.weight
         dominant.append(best_name)
 
-    parts: dict[str, list[tuple[int, int, int]]] = {p: [] for p in (
-        "leftArm", "rightArm", "leftLeg", "rightLeg", "torso", "skirt", "hair", "wings"
-    )}
+    wanted = {"torso", "skirt", "hair", "wings"}
+    for group in rules.get("limb_groups", {}):
+        wanted |= {f"left{group}", f"right{group}"}
+    parts: dict[str, list[tuple[int, int, int]]] = {p: [] for p in wanted}
+
     materials = obj.data.materials
     for poly in obj.data.polygons:
         if len(poly.vertices) != 3:
             continue
         mat = materials[poly.material_index] if poly.material_index < len(materials) else None
-        part = _material_part(mat.name) if mat else None
+        part = classify_material(mat.name, rules) if mat else None
         if part is None:
             votes = Counter(
-                _bone_part(dominant[i]) for i in poly.vertices if dominant[i] is not None
+                classify_bone(dominant[i], rules)
+                for i in poly.vertices
+                if dominant[i] is not None
             )
             part = votes.most_common(1)[0][0] if votes else None
         if part:
-            parts[part].append(tuple(poly.vertices))
+            parts.setdefault(part, []).append(tuple(poly.vertices))
     return parts
 
 
@@ -134,15 +100,21 @@ def _depth_mm(
     return depth * mm_per_unit, worst
 
 
-def _setup_camera(scene, camera: str | None, obj):
+def _setup_cameras(scene, cameras: list[str], obj):
     import bpy
     from mathutils import Vector
 
-    if camera and camera in bpy.data.objects:
-        scene.camera = bpy.data.objects[camera]
-        return
+    found = []
+    for name in cameras:
+        cam = bpy.data.objects.get(name)
+        if cam is not None and cam.type == "CAMERA":
+            found.append(cam)
+    if found:
+        scene.camera = found[0]
+        return found
     if scene.camera is not None:
-        return
+        return [scene.camera]
+
     # 默认机位：正面偏上，框住整个模型。它只是“能看见”的演示机位，
     # 不是最终渲染机位；验收时应显式传 --camera。
     bpy.context.view_layer.update()
@@ -158,22 +130,48 @@ def _setup_camera(scene, camera: str | None, obj):
     direction = center - cam.location
     cam.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
     scene.camera = cam
+    return [cam]
 
 
-def _visible(scene, depsgraph, point, height: float) -> str:
-    cam = scene.camera
+def _visible_from(scene, depsgraph, cam, point, height: float) -> bool | None:
     if cam is None:
-        return "unknown"
+        return None
     origin = cam.matrix_world.translation
     direction = point - origin
     if direction.length < 1e-9:
-        return "unknown"
+        return None
     direction.normalize()
     hit, loc, _nor, _idx, _obj, _mat = scene.ray_cast(depsgraph, origin, direction)
     if not hit:
-        return "yes"
+        return True
     # 第一个命中点就在穿透点附近 → 可见；否则被其他几何挡住。
-    return "yes" if (loc - point).length < max(0.01 * height, 0.02) else "no"
+    return (loc - point).length < max(0.01 * height, 0.02)
+
+
+def _visibility(scene, depsgraph, cameras, points, height):
+    """返回 (状态, 最大比例, "cam1:yes;cam2:no")。"""
+    if not cameras or not points:
+        return "unknown", None, ""
+    ratios: dict[str, float] = {}
+    per_cam = []
+    for cam in cameras:
+        seen = 0
+        known = 0
+        for p in points:
+            hit = _visible_from(scene, depsgraph, cam, p, height)
+            if hit is None:
+                continue
+            known += 1
+            if hit:
+                seen += 1
+        if known == 0:
+            per_cam.append(f"{cam.name}:unknown")
+            continue
+        ratio = seen / known
+        ratios[cam.name] = ratio
+        per_cam.append(f"{cam.name}:{'yes' if ratio >= 2 / 3 else ('partial' if ratio > 0 else 'no')}")
+    status, best = visibility_from_ratios(ratios)
+    return status, best, ";".join(per_cam)
 
 
 def run_validation(
@@ -190,12 +188,19 @@ def run_validation(
     markers: bool = True,
     visibility: bool = False,
     camera: str | None = None,
+    visibility_points: int = 3,
     thumbnails: str | None = None,
     thumb_size: int = 320,
+    contact_sheet: str | None = None,
+    parts_config: str | None = None,
     assumed_height_m: float = 1.6,
 ) -> list[dict]:
     import bpy
     from mathutils.bvhtree import BVHTree
+
+    rules = load_rules(parts_config)
+    pairs = part_pairs(rules)
+    bad_outside = outside_is_bad(rules)
 
     if model_path:
         bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -220,8 +225,10 @@ def run_validation(
     arm = arms[0]
 
     scene = bpy.context.scene
+    cameras = []
     if visibility or thumbnails:
-        _setup_camera(scene, camera, obj)
+        names = [c.strip() for c in (camera or "").split(",") if c.strip()]
+        cameras = _setup_cameras(scene, names, obj)
     if thumbnails:
         Path(thumbnails).mkdir(parents=True, exist_ok=True)
         # Workbench 在无 GPU 的服务器上会因 SSBO 限制渲染出空图；
@@ -254,9 +261,11 @@ def run_validation(
     top = max((arm.matrix_world @ b.head_local).z for b in arm.data.bones)
     mm_per_unit = assumed_height_m * 1000.0 / top if top > 1e-6 else 1.0
 
-    parts = _prepare_parts(obj, arm)
+    parts = _prepare_parts(obj, arm, rules)
     print(f"[validate] parts: " + ", ".join(f"{k}={len(v)}" for k, v in parts.items()))
     print(f"[validate] frames {start}..{end} step {step}; {mm_per_unit:.3f} mm/unit")
+    if cameras:
+        print(f"[validate] cameras: " + ", ".join(c.name for c in cameras))
 
     records: list[dict] = []
     markers_added: set[int] = set()
@@ -277,26 +286,30 @@ def run_validation(
                 bvhs[part] = BVHTree.FromPolygons(verts, polys, all_triangles=True)
 
         high_this_frame = False
-        for pa, pb in PART_PAIRS:
+        for pa, pb in pairs:
             if pa not in bvhs or pb not in bvhs:
                 continue
-            pairs = bvhs[pa].overlap(bvhs[pb])
-            if not pairs:
+            overlaps = bvhs[pa].overlap(bvhs[pb])
+            if not overlaps:
                 continue
-            pairs = pairs[:max_pairs]
-            best = 0.0
-            worst_point = None
-            for ia, ib in pairs[:max_depth_pairs]:
+            overlaps = overlaps[:max_pairs]
+            candidates: list[tuple[float, object]] = []
+            for ia, ib in overlaps[:max_depth_pairs]:
                 depth, point = _depth_mm(
                     bvhs[pa], parts[pa], bvhs[pb], parts[pb], verts, ia, ib,
-                    mm_per_unit, outside_is_bad=(pa, pb) in OUTSIDE_IS_BAD,
+                    mm_per_unit, outside_is_bad=(pa, pb) in bad_outside,
                 )
-                if depth > best:
-                    best, worst_point = depth, point
+                if depth > 0.0 and point is not None:
+                    candidates.append((depth, point))
+            best = max((c[0] for c in candidates), default=0.0)
             if best >= threshold_mm:
-                rec = make_record(vmd_frame, pa, pb, best, pairs=len(pairs))
-                if visibility and worst_point is not None:
-                    rec["visible"] = _visible(scene, dg, worst_point, top)
+                rec = make_record(vmd_frame, pa, pb, best, pairs=len(overlaps))
+                if visibility and candidates:
+                    points = pick_visibility_points(candidates, visibility_points)
+                    status, ratio, per_cam = _visibility(scene, dg, cameras, points, top)
+                    rec["visible"] = status
+                    rec["visible_ratio"] = "" if ratio is None else round(ratio, 3)
+                    rec["visible_cameras"] = per_cam
                 records.append(rec)
                 if rec["severity"] == "high":
                     high_this_frame = True
@@ -314,6 +327,9 @@ def run_validation(
             print(f"[validate] {n}/{len(frames)} frames, {elapsed:.1f}s, {len(records)} records")
 
     write_csv(records, out_csv)
+    if contact_sheet and thumbnails:
+        count = write_contact_sheet(records, thumbnails, contact_sheet)
+        print(f"[validate] contact sheet: {count} frames -> {contact_sheet}")
     elapsed = time.perf_counter() - t0
     print(f"[validate] done: {len(records)} records -> {out_csv} ({elapsed:.1f}s)")
     return records

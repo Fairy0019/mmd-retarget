@@ -5,11 +5,12 @@
 把「为 A 体型编排的 VMD，套到 B 体型上」这件事，从**逐帧手调**变成
 **可复现的管线 + 可读的报告**。
 
-> 状态：**M1 stage 3/4 + M2 stage 1/2**（v0.0.2）。M0 数据层完成；
-> M1 已有比例缩放、承重判断、分窗脚锁、锚定平滑、脊柱链、手臂两骨 IK；
-> M2 已有 BVH 穿模检测、severity、CSV/JSON、相机可见性、high 帧缩略图与
-> 回归门槛。间隙约束、骨盆补偿、contact sheet 尚未接入。
-> 进度见 [docs/PLAN.md](docs/PLAN.md)，实测报告见 `docs/reports/`。
+> 状态：**M1 / M2 完成**（v0.0.3）。M0 数据层完成；
+> M1 有比例缩放、承重判断、分窗脚锁、锚定平滑、脊柱链、手臂两骨 IK、
+> **间隙约束**与 **twist 恢复**；骨盆补偿目前只输出诊断数字。
+> M2 有 BVH 穿模检测、severity、CSV/JSON、**多机位/多点可见性**、
+> high 帧缩略图、**HTML contact sheet**、**可配置部位规则**与回归门槛。
+> 进度见 [docs/PLAN.md](docs/PLAN.md)，实测报告见 `docs/reports/`（最新 16）。
 
 ---
 

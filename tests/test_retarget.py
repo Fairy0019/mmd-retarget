@@ -242,3 +242,123 @@ def test_arm_ik_reaches_source_wrist():
         profile, out["joints"], {}, {"pos": [], "rot": []}, 1, ["手"]
     )["手"][0]
     assert wrist == pytest.approx((0.0, 2.0, 0.0), abs=1e-3)
+
+# ---------------------------------------------------------------- M1: clearance / twist
+
+def _arm_profile(radius: float):
+    rest = {
+        "センター": {"head": [0.0, 10.0, 0.0], "parent": None},
+        "上半身": {"head": [0.0, 10.0, 0.0], "tail": [0.0, 14.0, 0.0], "parent": "センター"},
+        "肩.L": {"head": [0.0, 14.0, 0.0], "tail": [0.5, 14.0, 0.0], "parent": "上半身"},
+        "腕.L": {"head": [0.5, 14.0, 0.0], "tail": [1.5, 14.0, 0.0], "parent": "肩.L"},
+        "ひじ.L": {"head": [1.5, 14.0, 0.0], "tail": [2.5, 14.0, 0.0], "parent": "腕.L"},
+        "手首.L": {"head": [2.5, 14.0, 0.0], "tail": [3.5, 14.0, 0.0], "parent": "ひじ.L"},
+    }
+    return {
+        "model": "arm",
+        "map": {
+            "root": "センター",
+            "leftUpperArm": "腕.L",
+            "leftLowerArm": "ひじ.L",
+            "leftHand": "手首.L",
+        },
+        "rest": rest,
+        "colliders": [
+            {
+                "bone": "上半身",
+                "semantic": "spine",
+                "type": "capsule",
+                "a": [3.0, 10.0, 0.0],
+                "b": [3.0, 14.0, 0.0],
+                "radius": radius,
+            }
+        ],
+    }
+
+
+def _empty_motion(frames: int = 1) -> dict:
+    return {
+        "schema": 1,
+        "fps": 30,
+        "frames": frames,
+        "root": {"pos": [], "rot": []},
+        "joints": {},
+        "translations": {},
+        "extra": {},
+        "extra_translations": {},
+        "contacts": [],
+        "morphs": {},
+        "meta": {},
+    }
+
+
+def test_clearance_pushes_wrist_out_of_torso():
+    from mmd_retarget.retarget import retarget_arms
+
+    # 源骨架的胶囊更细（手腕在体外），目标骨架更粗（手腕原本埋在体内），
+    # 这样才不会被“源动作本来就是贴身”白名单跳过。
+    source = _arm_profile(radius=0.2)
+    target = _arm_profile(radius=1.0)
+    motion = _empty_motion()
+    src_motion = _empty_motion()
+
+    stats = retarget_arms(
+        motion, src_motion, source, target, scale=1.0,
+        config={"arm_ik": {"clearance_m": 0.015, "max_push_m": 0.08, "iterations": 2}},
+    )
+    assert stats["clearance_pushed"] == 1
+    assert stats["clearance_max_push_m"] > 0.0
+
+    from mmd_retarget.canonical import forward_positions
+
+    wrist = forward_positions(target, motion["joints"], {}, {}, 1, ["手首.L"])["手首.L"][0]
+    # 胶囊轴在 x=3，半径 1.0；手腕应被推到 1.0 + clearance 之外（向 -x）
+    clearance_units = 0.015 * (14.0 / 1.6)
+    assert 3.0 - wrist[0] >= 1.0 + clearance_units - 1e-6
+
+
+def test_twist_keeps_hand_position():
+    import math
+
+    from mmd_retarget.canonical import forward_positions
+    from mmd_retarget.retarget import restore_twist
+
+    rest = {
+        "腕.L": {"head": [0.0, 14.0, 0.0], "tail": [1.0, 14.0, 0.0], "parent": None},
+        "腕捩.L": {"head": [1.0, 14.0, 0.0], "tail": [2.0, 14.0, 0.0], "parent": "腕.L"},
+        "ひじ.L": {"head": [2.0, 14.0, 0.0], "tail": [3.0, 14.0, 0.0], "parent": "腕捩.L"},
+        "手首.L": {"head": [3.0, 14.0, 0.0], "tail": [3.5, 14.0, 0.0], "parent": "ひじ.L"},
+    }
+    profile = {
+        "model": "twist",
+        "map": {
+            "leftUpperArm": "腕.L",
+            "leftUpperArmTwist": "腕捩.L",
+            "leftLowerArm": "ひじ.L",
+            "leftHand": "手首.L",
+        },
+        "rest": rest,
+    }
+    angle = math.radians(30.0)
+    s, c = math.sin(angle / 2), math.cos(angle / 2)
+    source_motion = _empty_motion()
+    source_motion["joints"] = {"leftUpperArmTwist": [[0, s, 0.0, 0.0, c]]}
+    motion = _empty_motion()
+
+    before = forward_positions(profile, motion["joints"], {}, {}, 1, ["手首.L"])["手首.L"][0]
+    stats = restore_twist(motion, source_motion, profile, profile, factor=0.5)
+    after = forward_positions(profile, motion["joints"], {}, {}, 1, ["手首.L"])["手首.L"][0]
+
+    assert stats["bones"] == 1
+    assert stats["mean_abs_deg"] == pytest.approx(15.0, abs=1e-6)
+    assert sum((after[i] - before[i]) ** 2 for i in range(3)) ** 0.5 < 1e-9
+
+
+def test_pelvic_shift_is_reported_for_unreachable_contact():
+    src, tgt = make_profiles(1.0)
+    motion = make_canonical(contact_pos=(0.5, 0.0, 30.0), ik_keys=[[0, 0.0, 0.0, 30.0]])
+    out = retarget_motion(motion, src, tgt)
+    stats = out["meta"]["retarget"]
+    assert stats["skipped_reach"] == 1
+    assert stats["pelvic_shift_frames"] == 1
+    assert stats["pelvic_shift_max_m"] > 0.0

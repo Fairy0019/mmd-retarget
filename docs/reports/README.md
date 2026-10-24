@@ -17,5 +17,6 @@
 | 13 | 2026-10-24 | M2 stage 3：缩略图/JSON/回归门槛 | 43 张 high 缩略图；全量 126 s |
 | 14 | 2026-10-24 | M1 stage 4：手臂两骨 IK | 手腕误差 max 4e-5 单位；间隙未做 |
 | 15 | 2026-10-24 | 状态总览 | M1/M2 能力矩阵、数字、待办 |
+| 16 | 2026-10-24 | M1 stage 5 + M2 stage 4 | 间隙/twist/多机位/规则配置/contact sheet；跨模型首次跑通 |
 
-测试：`pytest -q` 78 passed。
+测试：`pytest -q` 87 passed。

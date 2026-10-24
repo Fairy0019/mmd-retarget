@@ -25,6 +25,7 @@ __all__ = [
     "height_scale",
     "retarget_rotations",
     "retarget_arms",
+    "restore_twist",
     "retarget_motion",
     "contact_slide_stats",
 ]
@@ -41,6 +42,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "reach_margin": 0.02,
         # 默认不硬拉：够不到就跳过并报告，交给人工/下一层骨盆补偿。
         "clamp_unreachable": False,
+        # 骨盆补偿目前只做诊断（需要移动 root 并同步足 IK，属 M1 stage 6）。
+        "pelvic_compensation": "suggest",
         # 单个锁定窗口内允许的源脚漂移；超过则判为“迈步”不锁。
         "max_lock_drift_m": 0.04,
         "chunk_frames": 20,
@@ -53,6 +56,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "arm_ik": {
         "enabled": True,
+        # 手腕/肘到躯干胶囊的最小间隙；0 关闭。
+        "clearance_m": 0.015,
+        # 单帧最大外推量，超过就交给“编舞不可行”标记。
+        "max_push_m": 0.06,
+        # 推离迭代次数（推一次后肘部位置会变，需要复检）。
+        "iterations": 2,
+    },
+    "twist": {
+        # 把腕捩/手捩绕骨轴的分量恢复到目标骨架。
+        "enabled": True,
+        "factor": 0.5,
     },
     "smoothing": {
         # 锚定式：锁定帧是硬约束，只改未锁定段（见报告 09/10）。
@@ -159,8 +173,154 @@ def _norm(v):
     return (v[0] / n, v[1] / n, v[2] / n)
 
 
+def _dot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _closest_point_segment(p, a, b):
+    ab = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+    denom = _dot(ab, ab)
+    if denom < 1e-12:
+        return a
+    t = max(0.0, min(1.0, _dot((p[0] - a[0], p[1] - a[1], p[2] - a[2]), ab) / denom))
+    return (a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t)
+
+
+def _clearance_colliders(profile):
+    """只保留躯干类胶囊：手臂/腿自己的胶囊会把“贴着自身”误判成穿模。"""
+    skip = ("Arm", "Hand", "Leg", "Foot")
+    return [
+        c for c in profile.get("colliders", [])
+        if not any(k in c.get("semantic", "") for k in skip)
+    ]
+
+
+def _capsule_series(profile, joints, translations, root, frames, colliders=None):
+    """把 profile.colliders 变成逐帧世界胶囊 [(a, b, radius)]。
+
+    胶囊端点随所属骨骼刚体变换：``world = bone_pos + R(q) * (rest_end - rest_head)``。
+    """
+    rest = profile.get("rest", {})
+    colliders = colliders if colliders is not None else profile.get("colliders", [])
+    colliders = [
+        c for c in colliders
+        if c.get("bone") in rest and c.get("a") and c.get("b")
+    ]
+    if not colliders:
+        return []
+    bones = sorted({c["bone"] for c in colliders})
+    pos = forward_positions(profile, joints, translations, root, frames, bones)
+    rot = forward_rotations(profile, joints, root, frames, bones)
+    series = []
+    for f in range(frames):
+        caps = []
+        for c in colliders:
+            bone = c["bone"]
+            if not pos.get(bone) or not rot.get(bone):
+                continue
+            p = pos[bone][f]
+            q = rot[bone][f]
+            head = rest[bone]["head"]
+            off_a = (c["a"][0] - head[0], c["a"][1] - head[1], c["a"][2] - head[2])
+            off_b = (c["b"][0] - head[0], c["b"][1] - head[1], c["b"][2] - head[2])
+            ra = qrot(q, off_a)
+            rb = qrot(q, off_b)
+            caps.append((
+                (p[0] + ra[0], p[1] + ra[1], p[2] + ra[2]),
+                (p[0] + rb[0], p[1] + rb[1], p[2] + rb[2]),
+                float(c.get("radius", 0.05)),
+            ))
+        series.append(caps)
+    return series
+
+
+def _min_clearance(point, capsules, clearance):
+    """点到所有胶囊表面的最小余量（<0 表示已进入 clearance 带）。"""
+    best = float("inf")
+    for a, b, radius in capsules:
+        closest = _closest_point_segment(point, a, b)
+        d = math.dist(point, closest)
+        best = min(best, d - (radius + clearance))
+    return best
+
+
+def _solve_two_bone(S, T, L1, L2, pole):
+    """两骨 IK：给定肩 S、目标 T、极向量 pole，返回 (夹紧后的 T, 肘 E)。"""
+    vec = (T[0] - S[0], T[1] - S[1], T[2] - S[2])
+    d = math.sqrt(_dot(vec, vec)) or 1e-9
+    max_d = L1 + L2 - 1e-4
+    if d > max_d:
+        k = max_d / d
+        T = (S[0] + vec[0] * k, S[1] + vec[1] * k, S[2] + vec[2] * k)
+        vec = (T[0] - S[0], T[1] - S[1], T[2] - S[2])
+        d = max_d
+    axis = _norm(vec)
+    a = (L1 * L1 - L2 * L2 + d * d) / (2 * d)
+    h = math.sqrt(max(0.0, L1 * L1 - a * a))
+    base = (S[0] + axis[0] * a, S[1] + axis[1] * a, S[2] + axis[2] * a)
+    dot = _dot(pole, axis)
+    perp = (pole[0] - axis[0] * dot, pole[1] - axis[1] * dot, pole[2] - axis[2] * dot)
+    if _dot(perp, perp) < 1e-9:
+        # 极向量与轴共线时肘平面未定义：取任意稳定垂直方向，
+        # 否则 E 会落在轴上，两骨长度不再成立（旧实现的 (0,0,0) 兜底 bug）。
+        ref = (0.0, 1.0, 0.0) if abs(axis[1]) < 0.9 else (0.0, 0.0, 1.0)
+        perp = (
+            axis[1] * ref[2] - axis[2] * ref[1],
+            axis[2] * ref[0] - axis[0] * ref[2],
+            axis[0] * ref[1] - axis[1] * ref[0],
+        )
+    perp = _norm(perp)
+    E = (base[0] + perp[0] * h, base[1] + perp[1] * h, base[2] + perp[2] * h)
+    return T, E
+
+
+def _apply_clearance(T, S, L1, L2, pole, capsules, clearance, max_push, iterations):
+    """把手腕目标推离躯干胶囊；返回 (新 T, 新 E, 累计推离量)。"""
+    total = 0.0
+    E = None
+    for _ in range(max(1, iterations)):
+        T, E = _solve_two_bone(S, T, L1, L2, pole)
+        points = (T, E, (
+            (E[0] + T[0]) * 0.5, (E[1] + T[1]) * 0.5, (E[2] + T[2]) * 0.5,
+        ))
+        best_pen = 0.0
+        best_dir = None
+        for p in points:
+            for a, b, radius in capsules:
+                closest = _closest_point_segment(p, a, b)
+                d = math.dist(p, closest)
+                pen = radius + clearance - d
+                if pen > best_pen:
+                    best_pen = pen
+                    if d > 1e-9:
+                        best_dir = (
+                            (p[0] - closest[0]) / d,
+                            (p[1] - closest[1]) / d,
+                            (p[2] - closest[2]) / d,
+                        )
+                    else:
+                        best_dir = _norm((p[0] - a[0], p[1] - a[1], p[2] - a[2]))
+        if best_pen <= 1e-9 or best_dir is None:
+            break
+        step = min(best_pen, max_push - total)
+        if step <= 1e-9:
+            break
+        T = (T[0] + best_dir[0] * step, T[1] + best_dir[1] * step, T[2] + best_dir[2] * step)
+        total += step
+        if total >= max_push - 1e-9:
+            break
+    T, E = _solve_two_bone(S, T, L1, L2, pole)
+    return T, E, total
+
+
 def retarget_arms(
-    motion: dict, source_motion: dict, source: dict, target: dict, *, scale: float
+    motion: dict,
+    source_motion: dict,
+    source: dict,
+    target: dict,
+    *,
+    scale: float,
+    config: dict | None = None,
 ) -> dict:
     """两骨解析 IK：把源手腕世界轨迹搬到目标手臂。
 
@@ -173,9 +333,32 @@ def retarget_arms(
     stats = {
         "sides": 0,
         "reach_clamped": 0,
+        "clearance_pushed": 0,
+        "clearance_max_push_m": 0.0,
+        "clearance_mean_push_m": 0.0,
+        "clearance_skipped_contact": 0,
         "mean_wrist_error": 0.0,
         "max_wrist_error": 0.0,
     }
+
+    arm_cfg = (config or {}).get("arm_ik", {})
+    clearance_m = float(arm_cfg.get("clearance_m", 0.015))
+    max_push_m = float(arm_cfg.get("max_push_m", 0.06))
+    clearance_iterations = int(arm_cfg.get("iterations", 2))
+    height = _model_height(target) or 18.0
+    units_per_m = height / 1.6
+    clearance = clearance_m * units_per_m
+    max_push = max_push_m * units_per_m
+    m_per_unit = 1.0 / units_per_m
+    push_units = 0.0
+    capsule_frames = _capsule_series(
+        target, motion.get("joints", {}), motion.get("translations", {}),
+        motion.get("root", {}), frames, colliders=_clearance_colliders(target),
+    )
+    source_capsules = _capsule_series(
+        source, source_motion.get("joints", {}), source_motion.get("translations", {}),
+        source_motion.get("root", {}), frames, colliders=_clearance_colliders(source),
+    )
 
     # 源动作的腕捩/手捩关键帧会让“上臂-前臂”不再是两段直线；
     # 两骨 IK 解算前先清掉它们，否则手腕会偏几厘米。
@@ -232,28 +415,32 @@ def retarget_arms(
                  S[1] + (Ws[1] - Ss[1]) * scale,
                  S[2] + (Ws[2] - Ss[2]) * scale)
             goal = T
-            vec = (T[0] - S[0], T[1] - S[1], T[2] - S[2])
-            d = math.sqrt(sum(x * x for x in vec)) or 1e-9
-            max_d = L1 + L2 - 1e-4
-            if d > max_d:
-                k = max_d / d
-                T = (S[0] + vec[0] * k, S[1] + vec[1] * k, S[2] + vec[2] * k)
-                vec = (T[0] - S[0], T[1] - S[1], T[2] - S[2])
-                d = max_d
-                stats["reach_clamped"] += 1
-            axis = _norm(vec)
-            a = (L1 * L1 - L2 * L2 + d * d) / (2 * d)
-            h2 = max(0.0, L1 * L1 - a * a)
-            h = math.sqrt(h2)
-            base = (S[0] + axis[0] * a, S[1] + axis[1] * a, S[2] + axis[2] * a)
-
             pole = (Es[0] - Ss[0], Es[1] - Ss[1], Es[2] - Ss[2])
-            dot = pole[0] * axis[0] + pole[1] * axis[1] + pole[2] * axis[2]
-            perp = (pole[0] - axis[0] * dot, pole[1] - axis[1] * dot, pole[2] - axis[2] * dot)
-            if sum(x * x for x in perp) < 1e-9:
-                perp = (axis[1] * axis[1] + axis[2] * axis[2], -axis[0] * axis[1], -axis[0] * axis[2])
-            perp = _norm(perp)
-            E = (base[0] + perp[0] * h, base[1] + perp[1] * h, base[2] + perp[2] * h)
+            raw_d = math.dist(S, T)
+            T, E = _solve_two_bone(S, T, L1, L2, pole)
+            if raw_d > L1 + L2 - 1e-4:
+                stats["reach_clamped"] += 1
+
+            if capsule_frames and clearance > 0.0:
+                src_caps = source_capsules[f] if source_capsules else []
+                src_clear = _min_clearance(Ws, src_caps, clearance) if src_caps else float("inf")
+                tgt_clear = _min_clearance(T, capsule_frames[f], clearance)
+                # 只在“目标比源更穿”时推：源动作里手本来就贴着身体的地方保留。
+                intended = bool(src_caps) and src_clear <= tgt_clear + 1e-6
+                if intended:
+                    stats["clearance_skipped_contact"] += 1
+                else:
+                    T, E, push = _apply_clearance(
+                        T, S, L1, L2, pole, capsule_frames[f],
+                        clearance, max_push, clearance_iterations,
+                    )
+                    if push > 1e-9:
+                        stats["clearance_pushed"] += 1
+                        push_units += push
+                        stats["clearance_max_push_m"] = max(
+                            stats["clearance_max_push_m"], push * m_per_unit
+                        )
+                goal = T
 
             u1 = _norm((E[0] - S[0], E[1] - S[1], E[2] - S[2]))
             v1 = _norm((T[0] - E[0], T[1] - E[1], T[2] - E[2]))
@@ -277,6 +464,97 @@ def retarget_arms(
             stats["max_wrist_error"] = max(stats["max_wrist_error"], max(errs))
         stats["sides"] += 1
 
+    if stats["clearance_pushed"]:
+        stats["clearance_mean_push_m"] = round(
+            push_units / stats["clearance_pushed"] * m_per_unit, 5
+        )
+    stats["clearance_max_push_m"] = round(stats["clearance_max_push_m"], 5)
+    return stats
+
+
+def _qaxis(axis, angle):
+    s = math.sin(angle * 0.5)
+    return (axis[0] * s, axis[1] * s, axis[2] * s, math.cos(angle * 0.5))
+
+
+def restore_twist(
+    motion: dict,
+    source_motion: dict,
+    source: dict,
+    target: dict,
+    *,
+    factor: float = 0.5,
+) -> dict:
+    """把源动作的腕捩/手捩绕骨轴分量恢复到目标骨架。
+
+    两骨 IK 需要把链当成两条直线，所以解算前会清掉 twist 骨；解算后
+    再把**绕骨轴**的旋转加回去 —— 绕轴旋转不改变手腕位置，因此不会再
+    破坏 IK 结果。``factor`` 对应 MMD 常见的 0.5 捻り。
+    """
+    frames = int(motion.get("frames", 0))
+    smap, tmap = source.get("map", {}), target.get("map", {})
+    srest, trest = source.get("rest", {}), target.get("rest", {})
+    stats = {"bones": 0, "mean_abs_deg": 0.0}
+    total, count = 0.0, 0
+
+    for side in ("left", "right"):
+        for kind in ("UpperArmTwist", "LowerArmTwist"):
+            sem = f"{side}{kind}"
+            s_bone, t_bone = smap.get(sem), tmap.get(sem)
+            if not (s_bone and t_bone):
+                continue
+            if s_bone not in srest or t_bone not in trest:
+                continue
+            keys = source_motion.get("joints", {}).get(sem)
+            if not keys:
+                continue
+            t_parent = trest[t_bone].get("parent")
+            pq_t = (
+                forward_rotations(
+                    target, motion.get("joints", {}), motion.get("root", {}),
+                    frames, [t_parent],
+                ).get(t_parent, [])
+                if t_parent in trest else []
+            )
+            s_dir = _norm((
+                srest[s_bone]["tail"][0] - srest[s_bone]["head"][0],
+                srest[s_bone]["tail"][1] - srest[s_bone]["head"][1],
+                srest[s_bone]["tail"][2] - srest[s_bone]["head"][2],
+            ))
+            t_dir = _norm((
+                trest[t_bone]["tail"][0] - trest[t_bone]["head"][0],
+                trest[t_bone]["tail"][1] - trest[t_bone]["head"][1],
+                trest[t_bone]["tail"][2] - trest[t_bone]["head"][2],
+            ))
+            out_keys = []
+            for f in range(frames):
+                q = sample_keys(keys, f, quat=True)
+                # 取局部旋转的轴角（父空间）；用世界旋转会把手臂摆动也算进来。
+                if q[3] < 0.0:
+                    q = (-q[0], -q[1], -q[2], -q[3])
+                if q[3] > 0.999999:
+                    continue
+                angle = 2.0 * math.acos(max(-1.0, min(1.0, q[3])))
+                if angle < 1e-4:
+                    continue
+                half = math.sin(angle * 0.5)
+                if half < 1e-9:
+                    continue
+                axis = (q[0] / half, q[1] / half, q[2] / half)
+                sign = 1.0 if _dot(axis, s_dir) >= 0.0 else -1.0
+                twist = angle * sign * factor
+                parent_t = pq_t[f] if pq_t else _IDENTITY_Q
+                dir_t = qrot(parent_t, t_dir)
+                local = qmul(_qinv(parent_t), qmul(_qaxis(dir_t, twist), parent_t))
+                out_keys.append([float(f), *local])
+                total += abs(math.degrees(twist))
+                count += 1
+            if out_keys:
+                motion.setdefault("joints", {})[sem] = out_keys
+                stats["bones"] += 1
+
+    if count:
+        stats["mean_abs_deg"] = round(total / count, 3)
     return stats
 
 
@@ -431,7 +709,19 @@ def retarget_motion(
     if cfg.get("arm_ik", {}).get("enabled", True):
         arm_stats = {
             "enabled": True,
-            **retarget_arms(out, canonical, source, target, scale=height_scale(source, target)),
+            **retarget_arms(
+                out, canonical, source, target,
+                scale=height_scale(source, target), config=cfg,
+            ),
+        }
+    twist_stats = {"enabled": False}
+    if cfg.get("twist", {}).get("enabled", True):
+        twist_stats = {
+            "enabled": True,
+            **restore_twist(
+                out, canonical, source, target,
+                factor=float(cfg["twist"].get("factor", 0.5)),
+            ),
         }
     s_mapping = source.get("map", {})
     t_mapping = target.get("map", {})
@@ -461,8 +751,11 @@ def retarget_motion(
         "skipped_swing": 0,
         "skipped_reach": 0,
         "max_reach_ratio": 0.0,
+        "pelvic_shift_frames": 0,
+        "pelvic_shift_max_m": 0.0,
         "chain_split": split,
         "arm_ik": arm_stats,
+        "twist": twist_stats,
     }
 
     if not cfg["foot_lock"].get("enabled", True):
@@ -554,6 +847,12 @@ def retarget_motion(
                 ratio = math.dist(hip_mean, locked) / leg_len if leg_len > 1e-9 else 0.0
                 stats["max_reach_ratio"] = max(stats["max_reach_ratio"], ratio)
                 if ratio > 1.0 + 1e-9:
+                    deficit = math.dist(hip_mean, locked) - leg_len * (1.0 - margin)
+                    if deficit > 0.0 and stats["target_height"] > 1e-6:
+                        stats["pelvic_shift_frames"] += 1
+                        stats["pelvic_shift_max_m"] = max(
+                            stats["pelvic_shift_max_m"], deficit * 1.6 / stats["target_height"]
+                        )
                     if clamp:
                         locked = _clamp_to_reach(locked, hip_mean, leg_len * (1.0 - margin))
                         stats["clamped"] += 1

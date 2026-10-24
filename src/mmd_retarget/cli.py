@@ -120,6 +120,25 @@ def cmd_retarget(args: argparse.Namespace) -> int:
             f"wrist error mean {arm.get('mean_wrist_error', 0.0):.3f} / "
             f"max {arm.get('max_wrist_error', 0.0):.3f} units"
         )
+        if arm.get("clearance_pushed"):
+            print(
+                f"clearance : pushed {arm['clearance_pushed']} frames, "
+                f"mean {arm['clearance_mean_push_m'] * 1000:.1f} mm / "
+                f"max {arm['clearance_max_push_m'] * 1000:.1f} mm; "
+                f"intended contact kept {arm.get('clearance_skipped_contact', 0)}"
+            )
+    twist = stats.get("twist", {})
+    if twist.get("enabled"):
+        print(
+            f"twist     : {twist.get('bones', 0)} bones restored, "
+            f"mean {twist.get('mean_abs_deg', 0.0):.1f} deg"
+        )
+    if stats.get("pelvic_shift_frames"):
+        print(
+            f"pelvis    : {stats['pelvic_shift_frames']} unreachable frames need "
+            f"up to {stats['pelvic_shift_max_m'] * 1000:.1f} mm root shift "
+            f"(diagnostic only)"
+        )
     if stats.get("chain_split"):
         print(f"spine     : split across {len(stats['chain_split'])} target bones "
               f"({', '.join(stats['chain_split'])})")
@@ -142,7 +161,7 @@ def cmd_retarget(args: argparse.Namespace) -> int:
             f"ramp {smooth['ramped_frames']} frames, drop {smooth['dropped_smoothing']} chunks, "
             f"drift {smooth['locked_drift']:.2e}"
         )
-    print("note      : M1 stage 4（比例 + 承重 + 脚锁 + 平滑 + 脊柱链 + 手臂 IK）")
+    print("note      : M1 stage 5（比例 + 承重 + 脚锁 + 平滑 + 脊柱链 + 手臂 IK + 间隙 + twist）")
     print(f"written   : {args.out}")
     return 0
 
@@ -169,7 +188,10 @@ def cmd_validate(args: argparse.Namespace) -> int:
             markers=not args.no_markers,
             visibility=args.visibility,
             camera=args.camera,
+            visibility_points=args.visibility_points,
             thumbnails=args.thumbnails,
+            contact_sheet=args.contact_sheet,
+            parts_config=args.parts_config,
         )
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -327,7 +349,7 @@ def build_parser() -> argparse.ArgumentParser:
     ph.set_defaults(func=cmd_stub)
 
     v = sub.add_parser("validate", help="detect and report clipping (Blender only)")
-    v.add_argument("-c", "--camera", default=None, help="camera object name for visibility")
+    v.add_argument("-c", "--camera", default=None, help="camera name(s), comma separated")
     v.add_argument("-o", "--out", default="report.csv")
     v.add_argument("--model", default=None, help="import this PMX before validating")
     v.add_argument("--motion", default=None, help="import this VMD before validating")
@@ -340,7 +362,19 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--max-worse", type=int, default=None, help="fail if worse records exceed N")
     v.add_argument("--no-markers", action="store_true")
     v.add_argument("--visibility", action="store_true", help="ray-cast visibility check")
+    v.add_argument(
+        "--visibility-points", type=int, default=3,
+        help="how many deepest points to test per pair (default 3)",
+    )
     v.add_argument("--thumbnails", default=None, help="render high frames to this directory")
+    v.add_argument(
+        "--contact-sheet", default=None,
+        help="write an HTML contact sheet (requires --thumbnails)",
+    )
+    v.add_argument(
+        "--parts-config", default=None,
+        help="JSON file overriding the default part classification rules",
+    )
     v.add_argument("--json", default=None, help="also write records as JSON")
     v.set_defaults(func=cmd_validate)
 

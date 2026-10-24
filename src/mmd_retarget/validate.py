@@ -20,6 +20,9 @@ __all__ = [
     "write_json",
     "diff_reports",
     "summarize",
+    "pick_visibility_points",
+    "visibility_from_ratios",
+    "write_contact_sheet",
 ]
 
 #: (severity, 最小深度 mm)，从高到低。
@@ -32,6 +35,8 @@ CSV_FIELDS = (
     "depth_mm",
     "pairs",
     "visible",
+    "visible_ratio",
+    "visible_cameras",
     "severity",
     "suggestion",
 )
@@ -74,6 +79,8 @@ def make_record(
     *,
     pairs: int = 0,
     visible: str = "unknown",
+    visible_ratio: float | None = None,
+    visible_cameras: str = "",
 ) -> dict:
     severity = classify(depth_mm)
     if severity is None:
@@ -85,6 +92,8 @@ def make_record(
         "depth_mm": round(float(depth_mm), 3),
         "pairs": int(pairs),
         "visible": visible,
+        "visible_ratio": "" if visible_ratio is None else round(float(visible_ratio), 3),
+        "visible_cameras": visible_cameras,
         "severity": severity,
         "suggestion": _suggestion(part_a, part_b),
     }
@@ -112,6 +121,12 @@ def read_csv(path: str | Path) -> list[dict]:
                 "depth_mm": float(r["depth_mm"]),
                 "pairs": int(r.get("pairs") or 0),
                 "visible": r.get("visible") or "unknown",
+                "visible_ratio": (
+                    float(r["visible_ratio"])
+                    if r.get("visible_ratio") not in (None, "")
+                    else ""
+                ),
+                "visible_cameras": r.get("visible_cameras", ""),
                 "severity": r["severity"],
                 "suggestion": r.get("suggestion", ""),
             }
@@ -173,3 +188,108 @@ def summarize(records: list[dict]) -> dict:
         "by_severity": by_sev,
         "max_depth_mm": max((r["depth_mm"] for r in records), default=0.0),
     }
+
+
+def pick_visibility_points(candidates: list[tuple[float, object]], k: int = 3) -> list:
+    """从 (深度, 点) 里取深度最大的 k 个不重复点。
+
+    只取最深的单点会低估“可见面积”：一个点被手指遮住，不代表整块穿模看不见。
+    """
+    out: list = []
+    for _depth, point in sorted(candidates, key=lambda c: -c[0]):
+        if all(
+            sum((point[i] - q[i]) ** 2 for i in range(3)) > 1e-12 for q in out
+        ):
+            out.append(point)
+        if len(out) >= k:
+            break
+    return out
+
+
+def visibility_from_ratios(ratios: dict[str, float]) -> tuple[str, float | None]:
+    """多机位可见比例 -> (状态, 最大可见比例)。
+
+    ``yes`` ≥ 2/3，``partial`` > 0，``no`` = 0；无机位则 ``unknown``。
+    """
+    if not ratios:
+        return "unknown", None
+    best = max(ratios.values())
+    if best >= 2.0 / 3.0:
+        return "yes", best
+    if best > 0.0:
+        return "partial", best
+    return "no", 0.0
+
+
+def write_contact_sheet(
+    records: list[dict],
+    thumbs_dir: str | Path,
+    out_path: str | Path,
+    *,
+    title: str = "穿模 contact sheet",
+) -> int:
+    """把每个 high 帧的缩略图拼成 HTML contact sheet（可点击、带参数）。
+
+    不依赖 PIL：服务器上没装图像库也能用。图片按相对路径引用，
+    整个目录一起拷走即可。
+    """
+    import html
+
+    thumbs_dir = Path(thumbs_dir)
+    out_path = Path(out_path)
+    out_dir = out_path.parent
+    best: dict[int, dict] = {}
+    for r in records:
+        frame = int(r["frame"])
+        cur = best.get(frame)
+        if cur is None or float(r["depth_mm"]) > float(cur["depth_mm"]):
+            best[frame] = r
+
+    order = {"high": 0, "medium": 1, "low": 2}
+    rows = sorted(
+        best.values(),
+        key=lambda r: (order.get(r["severity"], 9), -float(r["depth_mm"])),
+    )
+
+    cards = []
+    for r in rows:
+        frame = int(r["frame"])
+        img = thumbs_dir / f"clip_{frame:05d}.png"
+        if not img.exists():
+            continue
+        try:
+            src = img.relative_to(out_dir).as_posix()
+        except ValueError:
+            src = img.as_posix()
+        cards.append(
+            f"""<figure class="{html.escape(r['severity'])}">
+  <a href="{html.escape(src)}"><img loading="lazy" src="{html.escape(src)}" alt="frame {frame}"></a>
+  <figcaption>
+    <b>#{frame}</b> · {html.escape(r['part_a'])} ↔ {html.escape(r['part_b'])}<br>
+    {float(r['depth_mm']):.1f} mm · {html.escape(r['severity'])} · visible={html.escape(str(r.get('visible','unknown')))}
+  </figcaption>
+</figure>"""
+        )
+
+    doc = f"""<!doctype html>
+<meta charset="utf-8">
+<title>{html.escape(title)}</title>
+<style>
+  body {{ background:#111; color:#ddd; font:14px/1.5 system-ui, sans-serif; margin:24px; }}
+  h1 {{ font-size:18px; font-weight:600; }}
+  .grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:16px; }}
+  figure {{ margin:0; background:#1b1b1f; border-radius:8px; overflow:hidden; }}
+  figure.high {{ outline:2px solid #e5484d; }}
+  figure.medium {{ outline:2px solid #f5a524; }}
+  img {{ width:100%; display:block; }}
+  figcaption {{ padding:8px 10px; color:#bbb; }}
+  b {{ color:#fff; }}
+</style>
+<h1>{html.escape(title)} · {len(cards)} frames</h1>
+<div class="grid">
+{''.join(cards)}
+</div>
+"""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(doc, encoding="utf-8")
+    return len(cards)
