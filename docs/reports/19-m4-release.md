@@ -59,7 +59,24 @@ OUT=/tmp/demo PHYSICS=0 VALIDATE=0 ./tools/demo_pipeline.sh
 关键口径：脚 IK 目标不含 root，移动 root 只动骨盆、不动脚。这是之前
 不敢自动补偿的原因，报告 18 已写清。
 
-## 3. M3 mesh radius 实验（负结果）
+## 3. 端到端 demo 实跑
+
+```bash
+MODEL=薇斯纳.pmx MOTION=恋爱循环.vmd OUT=/tmp/demo STEP=50 PHYSICS=1 VALIDATE=1 ./tools/demo_pipeline.sh
+```
+
+| 步骤 | 结果 |
+|---|---|
+| skeleton / canonical | 通过 |
+| retarget | 通过（间隙 push 159 帧，pelvis 38 块） |
+| physics（头发） | 通过 |
+| validate（113 帧，step 50） | 419 条 / high 22 / 52 s |
+| 输出 | `final.vmd` 40 MB、`report.csv/json`、17 张缩略图、`sheet.html` |
+
+全链路约 3 分钟。`final.vmd` 体积大是因为物理/脚锁/手臂都烘焙成逐帧键，
+属于预期。
+
+## 4. M3 mesh radius 实验（负结果）
 
 报告 17 说裙摆骨链会把腿顶穿。本轮试了一个中间方案：
 
@@ -80,7 +97,7 @@ high 从 47 推到 109；本实验不改变结论。
 **决定**：`use_mesh_radius` 默认 `False`，代码保留供以后布料/权重方案
 参考；`chains.skirt` 仍默认关闭。不要继续调骨链参数。
 
-## 4. M4 验收对照
+## 5. M4 验收对照
 
 | 验收项 | 状态 |
 |---|---|
@@ -89,7 +106,7 @@ high 从 47 推到 109；本实验不改变结论。
 | v0.1.0 | ✅ |
 | 新用户按 README 30 分钟跑通 | 🟡 命令/模板齐全，但本地没有第二副可公开素材，未做“陌生人”实测 |
 
-## 5. 仍然没做的
+## 6. 仍然没做的
 
 1. **裙摆 C4**：布料模拟或重新刷权重；骨链方案已判死刑；
 2. **头发分组**：背后长发/肩前侧发仍用同一套参数；
@@ -99,7 +116,7 @@ high 从 47 推到 109；本实验不改变结论。
 6. **morph 映射**：靠日文同名，换模型需要映射表；
 7. **跨模型素材**：报告 16 的 Lumine 模型不在当前工作区，无法复现。
 
-## 6. 复现
+## 7. 复现
 
 ```bash
 .venv/bin/python -m pytest -q            # 95 passed
@@ -107,7 +124,7 @@ high 从 47 推到 109；本实验不改变结论。
 MODEL=... MOTION=... ./tools/demo_pipeline.sh
 ```
 
-## 7. 给接手人的一句话
+## 8. 给接手人的一句话
 
 **M0–M2 可以按 README 用；M3 只开头发；裙摆不要再调骨链参数，直接上
 布料或重刷权重。**

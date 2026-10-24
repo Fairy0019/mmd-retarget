@@ -83,10 +83,16 @@ perp = _norm(perp)
 `tests/test_retarget.py::test_clearance_pushes_wrist_out_of_torso`
 ——它同时覆盖“伸直 + 共线 + 推离”，修复前必失败。
 
-建议再补一个更直接的断言用例（TODO）：
+已补更直接的断言用例（2026-10-24）：
+
+`tests/test_retarget.py::test_two_bone_length_invariants`
 
 ```python
 # 对任意 T，解完应满足 |E-S| ≈ L1 且 |T-E| ≈ L2
+for T, pole in cases:   # 包含伸直、共线、零极向量、一般三维
+    T2, E = _solve_two_bone(S, T, 1.0, 1.0, pole)
+    assert math.dist(S, E) == pytest.approx(1.0, abs=1e-6)
+    assert math.dist(T2, E) == pytest.approx(1.0, abs=1e-6)
 ```
 
 ## 教训
