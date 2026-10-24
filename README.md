@@ -5,15 +5,26 @@
 把「为 A 体型编排的 VMD，套到 B 体型上」这件事，从**逐帧手调**变成
 **可复现的管线 + 可读的报告**。
 
-> 状态：**M3 框架完成**（v0.0.4）。M1 / M2 完成；
-> M1 有比例缩放、承重判断、分窗脚锁、锚定平滑、脊柱链、手臂两骨 IK、
-> **间隙约束**与 **twist 恢复**；骨盆补偿目前只输出诊断数字。
-> M2 有 BVH 穿模检测、severity、CSV/JSON、**多机位/多点可见性**、
-> high 帧缩略图、**HTML contact sheet**、**可配置部位规则**与回归门槛。
-> M3 骨链物理已接入：**头发启用，裙摆暂缓**（骨链会把腿顶穿，待布料/权重）。
-> 进度见 [docs/PLAN.md](docs/PLAN.md)，实测报告见 `docs/reports/`（最新 17）。
+> 状态：**v0.1.0**。M0–M2 完成，M3 头发物理可用、裙摆物理是实验特性，
+> M4 集成/文档完成。测试 **95 passed**。
+>
+> - **M1**：比例缩放、承重/脚锁、骨盆补偿、脊柱链、手臂 IK + 间隙、twist、锚定平滑；
+> - **M2**：BVH 穿透检测、severity、CSV/JSON、多机位/多点可见性、缩略图、
+>   contact sheet、回归 diff + CI 门槛；
+> - **M3**：头发骨链 PBD 启用；裙摆骨链会把腿顶穿，默认关闭（见报告 17）。
 
 ---
+
+## 管线
+
+```
+VMD + 源骨架档案 + 目标骨架档案
+   → canonical motion（语义关节 + 根轨迹 + 接触段 + 表情）
+   → 重定向（比例 / 脚锁 / 骨盆补偿 / 手臂 IK / 间隙 / twist / 平滑）
+   → 被动件物理（头发；裙摆实验）
+   → 检测与标注（BVH 深度 / 可见性 / severity / 回归）
+   → 目标模型的 VMD + CSV/JSON/contact sheet
+```
 
 ## 为什么做这个
 
@@ -24,28 +35,44 @@ MMD 生态里换模型套动作的流程通常是：
 3. 逐帧手动挪骨头。
 
 第 3 步不可扩展，而且**问题出在第 1 步**：VMD 只有关节角，没有“手要到哪”
-的意图；直接复制局部四元数，会同时引入**比例误差、rest/roll 误差、FK 语义误差**。
-再加一层手动偏移只是打补丁——阈值处会弹跳，边缘处仍会穿。
+的意图；直接复制局部四元数，会同时引入比例、rest/roll、FK 语义误差。
+现有工具基本停在「比例缩放 + 骨架映射」，没有一个同时做脚锁、手臂 IK、
+间隙、被动件物理和穿模验收。
 
-现有工具基本停在「比例缩放 + 骨架映射」，**没有一个同时做**：
+## 快速开始
 
-- rest pose / bone roll 适配；
-- 脚锁（防滑步）+ 手臂 IK + 间隙约束；
-- 裙 / 发 / 袖 / 披风的被动件物理；
-- 穿透深度 + 可见性 + 时间轴标注 + 回归。
+```bash
+python -m venv .venv
+. .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
 
-`mmd-retarget` 想补的就是这块。
+# 1) 看模型 / 动作
+python -m mmd_retarget inspect model.pmx
+python -m mmd_retarget inspect motion.vmd
 
-## 它做什么
+# 2) 生成源/目标骨架档案
+python -m mmd_retarget skeleton src_model.pmx -o src.json
+python -m mmd_retarget skeleton dst_model.pmx -o dst.json
 
+# 3) VMD → canonical
+python -m mmd_retarget inspect motion.vmd -p src.json -o motion.json
+
+# 4) 重定向
+python -m mmd_retarget retarget motion.json \
+  -s src.json -t dst.json -o out.vmd -c configs/retarget.json
+
+# 5) 头发物理（可选）
+python -m mmd_retarget physics motion.json -p dst.json \
+  -o motion_phys.json --vmd final.vmd -c configs/physics.json
+
+# 6) 穿模检测（需要 Blender + MMD Tools）
+blender -b --python tools/blender_cli.py -- validate \
+  --model dst_model.pmx --motion final.vmd \
+  -o report.csv --json report.json --step 20 \
+  --visibility --thumbnails thumbs --contact-sheet sheet.html
 ```
-VMD + 源骨架档案 + 目标骨架档案
-   → canonical motion（语义关节 + 根轨迹 + 接触段 + 表情）
-   → 重定向（脚锁 / 手臂 IK / 间隙约束 / 时间平滑）
-   → 被动件物理（裙 / 发 / 袖，烘焙成骨骼动画）
-   → 检测与标注（穿透深度 / 可见性 / severity / 回归）
-   → 目标模型的 VMD
-```
+
+完整版见 [docs/QUICKSTART.md](docs/QUICKSTART.md)。
 
 ## 它不做什么
 
@@ -57,46 +84,39 @@ VMD + 源骨架档案 + 目标骨架档案
 
 | 文档 | 内容 |
 |---|---|
-| [docs/VISION.md](docs/VISION.md) | 构想：问题、原则、分层设计 |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 模块、数据模型、算法要点 |
-| [docs/PLAN.md](docs/PLAN.md) | 里程碑 M0–M4 与验收标准 |
-| [docs/STEPS.md](docs/STEPS.md) | 开发步骤拆解（12 步、依赖、验收） |
-| [docs/bugs/](docs/bugs/README.md) | **Bug 复盘库**：根因、修复、波及面、回归与教训 |
+| [docs/QUICKSTART.md](docs/QUICKSTART.md) | 30 分钟跑通：命令、配置、排错 |
+| [docs/VISION.md](docs/VISION.md) | 问题、原则、分层设计 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 模块、数据模型、算法 |
+| [docs/PLAN.md](docs/PLAN.md) | 里程碑与验收标准 |
+| [docs/STEPS.md](docs/STEPS.md) | 开发步骤拆解 |
+| [docs/bugs/](docs/bugs/README.md) | Bug 复盘库：根因、波及面、回归 |
+| [docs/reports/](docs/reports/README.md) | 阶段报告与实测数字 |
+| [configs/](configs/README.md) | retarget / physics / parts 配置模板 |
 
-## 快速开始（M0，不需要 Blender）
+## 实测
 
-```bash
-python -m venv .venv
-. .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"       # 或 pip install numpy pytest
-
-# 1) 看模型 / 动作
-python -m mmd_retarget.cli inspect model.pmx
-python -m mmd_retarget.cli inspect motion.vmd
-
-# 2) 生成目标骨架档案
-python -m mmd_retarget.cli skeleton model.pmx -o profile.json
-
-# 3) VMD → canonical motion（接触段需要 profile）
-python -m mmd_retarget.cli inspect motion.vmd -p profile.json -o motion.json
-
-# 4) canonical → VMD（M0 为 pass-through，M1 才做比例/rest/IK）
-python -m mmd_retarget.cli retarget motion.json -s src.json -t dst.json -o out.vmd
-```
-
-> `retarget` 目前做比例缩放 + 分窗脚锁；rest-relative 旋转、手臂 IK、
-> 间隙约束与时间平滑尚未接入，输出仍不是最终可用结果。
+| 项 | 数值 |
+|---|---|
+| VMD 2.9 MB / 140 骨 / 25,973 帧 | 解析 0.086 s，字节级 round-trip |
+| VMD 压力测试 789,600 帧 | 3.40 s（目标 < 10 s） |
+| PMX 6.4 MB / 63k 顶点 / 550 骨 | 0.35 s |
+| 同骨架回写 | 旋转误差 3e-6°，位移 0 |
+| 手臂 IK 手腕误差 | mean 3e-8 / max 4e-5 单位 |
+| 脚锁 | 115 窗口 / 1,800 帧（16.0%），窗口内漂移 0 |
+| 骨盆补偿 | 53 个不可达窗口 → 38 个自动补偿，root 最大 48 mm |
+| M2 采样 | 282 帧 / 24 s / 1,051 条记录 |
+| 可见性 | 288/1,051 可见；37 条可见 high 全为腿–裙 |
 
 ## 技术栈
 
-- **Python 3.11**（Blender 内置解释器）
-- **Blender bpy / mathutils**：骨骼、网格、BVH、IK
+- **Python 3.11+**；纯 Python 层不依赖 Blender
+- **Blender bpy / mathutils**：网格、BVH、可视性、缩略图
 - **numpy**：数值计算
-- 性能瓶颈（VMD/PMX 解析、IK、BVH）如需要再下沉到 **C++ + pybind11**
+- 性能瓶颈可按需下沉到 C++ + pybind11
 
 ## 许可证
 
-**GPL-3.0-or-later**。与 MMD Tools 生态一致；若未来引入其解析代码，无需换证。
+**GPL-3.0-or-later**。与 MMD Tools 生态一致。
 
 ## 素材声明
 

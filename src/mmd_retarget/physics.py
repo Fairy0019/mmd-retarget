@@ -32,6 +32,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_step_units": 0.6,
     "max_angle_deg": 12.0,
     "collision_margin_units": 0.0,
+    # 用 profile.rest[*].mesh_radius 把“网格比骨头胖”的部分加进碰撞半径。
+    "use_mesh_radius": False,
+    "mesh_radius_scale": 0.7,
     "skirt_shape_stiffness": 0.0,
     "hair_shape_stiffness": 0.05,
     "chains": {"skirt": False, "hair": True},
@@ -229,7 +232,7 @@ def _capsule_frames(profile, motion, semantic_filter, extra_prefixes=(), extra_r
     return out
 
 
-def _push_out(p, capsules, margin=0.0):
+def _push_out(p, capsules, margin=0.0, extra=0.0):
     x, y, z = p
     for a, b, r in capsules:
         ab = _sub(b, a)
@@ -240,8 +243,9 @@ def _push_out(p, capsules, margin=0.0):
             t = max(0.0, min(1.0, _dot(_sub((x, y, z), a), ab) / denom))
             closest = _add(a, _mul(ab, t))
         d = math.dist((x, y, z), closest)
-        if d < r + margin and d > 1e-9:
-            k = (r + margin - d) / d
+        limit = r + margin + extra
+        if d < limit and d > 1e-9:
+            k = (limit - d) / d
             x += (x - closest[0]) * k
             y += (y - closest[1]) * k
             z += (z - closest[2]) * k
@@ -281,6 +285,12 @@ def _simulate_chain(profile, motion, chain, colliders, cfg, units_per_m, kind="s
     max_angle = math.radians(float(cfg.get("max_angle_deg", 12.0)))
     margin = float(cfg.get("collision_margin_units", 0.0))
     stiffness = float(cfg.get(f"{kind}_shape_stiffness", 0.0))
+    use_mesh_radius = kind == "skirt" and bool(cfg.get("use_mesh_radius", True))
+    mesh_scale = float(cfg.get("mesh_radius_scale", 0.7))
+    extra_margins = [
+        float(rest[b].get("mesh_radius", 0.0)) * mesh_scale if use_mesh_radius else 0.0
+        for b in bones
+    ]
 
     pts = [list(p) for p in rest_pts]
     prev = [list(p) for p in rest_pts]
@@ -317,7 +327,10 @@ def _simulate_chain(profile, motion, chain, colliders, cfg, units_per_m, kind="s
                     pts[i + 1] = _sub(pts[i + 1], _mul(delta, diff))
                 for i in range(1, n + 1):
                     before = pts[i]
-                    pts[i] = _push_out(pts[i], colliders[f] if f < len(colliders) else [], margin)
+                    extra = extra_margins[min(i - 1, n - 1)]
+                    pts[i] = _push_out(
+                        pts[i], colliders[f] if f < len(colliders) else [], margin, extra
+                    )
                     if math.dist(pts[i], before) > 1e-9:
                         pushes += 1
         # 限速

@@ -1,0 +1,22 @@
+{
+  "material": {
+    "skirt": ["裙"],
+    "hair": ["髮", "前髪"],
+    "wings": ["翼"]
+  },
+  "exclude_material": ["裙内"],
+  "limb_groups": {
+    "Arm": ["肩", "腕", "ひじ", "手首", "手捩"],
+    "Leg": ["足", "ひざ", "つま先"]
+  },
+  "pairs": [
+    ["leftArm", "torso"],
+    ["rightArm", "torso"],
+    ["leftArm", "skirt"],
+    ["rightArm", "skirt"],
+    ["leftLeg", "skirt"],
+    ["rightLeg", "skirt"],
+    ["hair", "torso"],
+    ["wings", "torso"]
+  ]
+}

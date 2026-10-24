@@ -1,0 +1,34 @@
+{
+  "scale": { "mode": "height" },
+  "foot_lock": {
+    "enabled": true,
+    "reach_margin": 0.02,
+    "clamp_unreachable": false,
+    "pelvic_compensation": {
+      "mode": "apply",
+      "max_shift_m": 0.08,
+      "smooth_window": 2,
+      "max_rate_m_per_frame": 0.008
+    },
+    "max_lock_drift_m": 0.04,
+    "chunk_frames": 20,
+    "support_ratio": 0.5,
+    "max_support_drift_m": 0.12,
+    "assumed_height_m": 1.6
+  },
+  "arm_ik": {
+    "enabled": true,
+    "clearance_m": 0.015,
+    "max_push_m": 0.06,
+    "iterations": 2
+  },
+  "twist": {
+    "enabled": true,
+    "factor": 0.5
+  },
+  "smoothing": {
+    "enabled": true,
+    "window": 2,
+    "max_rate_m_per_frame": 0.01
+  }
+}
