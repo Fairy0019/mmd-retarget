@@ -316,6 +316,48 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_physics(args: argparse.Namespace) -> int:
+    """被动件物理：裙/发骨链 PBD → 烘焙进 canonical 的 extra。"""
+    from .physics import simulate
+
+    try:
+        motion = load_canonical(args.motion)
+        profile = load_profile(args.profile)
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    config: dict = {}
+    if args.config:
+        try:
+            config = json.loads(Path(args.config).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"error: config: {exc}", file=sys.stderr)
+            return 1
+    chains = config.setdefault("chains", {})
+    if args.no_skirt:
+        chains["skirt"] = False
+    if args.no_hair:
+        chains["hair"] = False
+
+    out = simulate(motion, profile, config=config)
+    save_canonical(out, args.out)
+    stats = out.get("meta", {}).get("physics", {})
+    items = stats.get("chains", {})
+    print(f"chains    : {len(items)}")
+    for name, st in list(items.items())[:8]:
+        print(
+            f"  {name}: {st['bones']} bones, "
+            f"max step {st['max_step_units']:.3f}, pushes {st['collision_pushes']}"
+        )
+    print(f"pushes    : {stats.get('collision_pushes', 0)}")
+    print(f"written   : {args.out}")
+    if args.vmd:
+        write_vmd(canonical_to_vmd(out, profile), args.vmd)
+        print(f"vmd       : {args.vmd}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="mmd-retarget",
@@ -344,9 +386,16 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("-c", "--config", default=None)
     r.set_defaults(func=cmd_retarget)
 
-    ph = sub.add_parser("physics", help="bake passive physics (skirt/hair/sleeves)")
+    ph = sub.add_parser("physics", help="bake passive physics (skirt/hair)")
+    ph.add_argument("motion", help="canonical motion JSON")
+    ph.add_argument("-p", "--profile", required=True, help="target skeleton profile")
+    ph.add_argument("-o", "--out", default="motion_physics.json")
     ph.add_argument("-c", "--config", default=None)
-    ph.set_defaults(func=cmd_stub)
+    ph.add_argument("--vmd", default=None, help="also write a VMD for the target model")
+    ph.add_argument("--skirt", action="store_true", help="enable skirt chains (default off)")
+    ph.add_argument("--no-skirt", action="store_true")
+    ph.add_argument("--no-hair", action="store_true")
+    ph.set_defaults(func=cmd_physics)
 
     v = sub.add_parser("validate", help="detect and report clipping (Blender only)")
     v.add_argument("-c", "--camera", default=None, help="camera name(s), comma separated")

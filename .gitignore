@@ -35,3 +35,7 @@ assets/
 *.wav
 *.blend
 *.blend1
+
+# 渲染/检查产物
+renders/
+*.mp4

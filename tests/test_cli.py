@@ -21,11 +21,6 @@ def test_cli_parses_known_commands():
     assert args.out == "x.vmd"
 
 
-def test_cli_stub_runs(capsys):
-    assert main(["physics"]) == 0
-    out = capsys.readouterr().out
-    assert "not implemented" in out
-
 
 def test_inspect_missing_file(capsys):
     assert main(["inspect", "nope.vmd"]) == 2
@@ -136,3 +131,9 @@ def test_retarget_pass_through(tmp_path, capsys):
     assert out.model_name == "Test"
     assert len(out.bone_frames) == 2
     assert "stage 5" in capsys.readouterr().out
+def test_physics_requires_inputs(capsys):
+    import pytest
+
+    with pytest.raises(SystemExit) as exc:
+        main(["physics"])
+    assert exc.value.code == 2
