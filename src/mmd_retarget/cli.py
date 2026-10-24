@@ -153,6 +153,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
             end=args.end,
             threshold_mm=args.threshold,
             markers=not args.no_markers,
+            visibility=args.visibility,
+            camera=args.camera,
         )
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -299,7 +301,7 @@ def build_parser() -> argparse.ArgumentParser:
     ph.set_defaults(func=cmd_stub)
 
     v = sub.add_parser("validate", help="detect and report clipping (Blender only)")
-    v.add_argument("-c", "--camera", default="final")
+    v.add_argument("-c", "--camera", default=None, help="camera object name for visibility")
     v.add_argument("-o", "--out", default="report.csv")
     v.add_argument("--model", default=None, help="import this PMX before validating")
     v.add_argument("--motion", default=None, help="import this VMD before validating")
@@ -309,6 +311,7 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--threshold", type=float, default=2.0, help="min depth mm")
     v.add_argument("--diff", default=None, help="compare against an old CSV")
     v.add_argument("--no-markers", action="store_true")
+    v.add_argument("--visibility", action="store_true", help="ray-cast visibility check")
     v.set_defaults(func=cmd_validate)
 
     return p

@@ -119,6 +119,7 @@ def _depth_mm(
     **内部**是正常的，只有穿到外层外面才算穿模，所以判据取反。
     """
     depth = 0.0
+    worst = None
     for tri, bvh in ((polys_b[ib], bvh_a), (polys_a[ia], bvh_b)):
         for vi in tri:
             p = verts[vi]
@@ -127,8 +128,52 @@ def _depth_mm(
                 continue
             side = normal.dot(p - loc)
             if (side > 0.0) if outside_is_bad else (side < 0.0):
-                depth = max(depth, dist)
-    return depth * mm_per_unit
+                if dist > depth:
+                    depth = dist
+                    worst = p.copy()
+    return depth * mm_per_unit, worst
+
+
+def _setup_camera(scene, camera: str | None, obj):
+    import bpy
+    from mathutils import Vector
+
+    if camera and camera in bpy.data.objects:
+        scene.camera = bpy.data.objects[camera]
+        return
+    if scene.camera is not None:
+        return
+    # 默认机位：正面偏上，框住整个模型。它只是“能看见”的演示机位，
+    # 不是最终渲染机位；验收时应显式传 --camera。
+    bpy.context.view_layer.update()
+    corners = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+    zs = [c.z for c in corners]
+    top = max(zs)
+    center = sum(corners, Vector()) / 8.0
+    cam_data = bpy.data.cameras.new("validate_cam")
+    cam_data.lens = 50
+    cam = bpy.data.objects.new("validate_cam", cam_data)
+    bpy.context.collection.objects.link(cam)
+    cam.location = (center.x + top * 0.8, center.y - top * 2.0, center.z + top * 0.15)
+    direction = center - cam.location
+    cam.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+    scene.camera = cam
+
+
+def _visible(scene, depsgraph, point, height: float) -> str:
+    cam = scene.camera
+    if cam is None:
+        return "unknown"
+    origin = cam.matrix_world.translation
+    direction = point - origin
+    if direction.length < 1e-9:
+        return "unknown"
+    direction.normalize()
+    hit, loc, _nor, _idx, _obj, _mat = scene.ray_cast(depsgraph, origin, direction)
+    if not hit:
+        return "yes"
+    # 第一个命中点就在穿透点附近 → 可见；否则被其他几何挡住。
+    return "yes" if (loc - point).length < max(0.01 * height, 0.02) else "no"
 
 
 def run_validation(
@@ -143,6 +188,8 @@ def run_validation(
     max_pairs: int = 200,
     max_depth_pairs: int = 40,
     markers: bool = True,
+    visibility: bool = False,
+    camera: str | None = None,
     assumed_height_m: float = 1.6,
 ) -> list[dict]:
     import bpy
@@ -171,6 +218,8 @@ def run_validation(
     arm = arms[0]
 
     scene = bpy.context.scene
+    if visibility:
+        _setup_camera(scene, camera, obj)
     end = end if end is not None else scene.frame_end - 1
     start = max(start, 0)
     end = min(end, scene.frame_end - 1)
@@ -209,16 +258,18 @@ def run_validation(
                 continue
             pairs = pairs[:max_pairs]
             best = 0.0
+            worst_point = None
             for ia, ib in pairs[:max_depth_pairs]:
-                best = max(
-                    best,
-                    _depth_mm(
-                        bvhs[pa], parts[pa], bvhs[pb], parts[pb], verts, ia, ib,
-                        mm_per_unit, outside_is_bad=(pa, pb) in OUTSIDE_IS_BAD,
-                    ),
+                depth, point = _depth_mm(
+                    bvhs[pa], parts[pa], bvhs[pb], parts[pb], verts, ia, ib,
+                    mm_per_unit, outside_is_bad=(pa, pb) in OUTSIDE_IS_BAD,
                 )
+                if depth > best:
+                    best, worst_point = depth, point
             if best >= threshold_mm:
                 rec = make_record(vmd_frame, pa, pb, best, pairs=len(pairs))
+                if visibility and worst_point is not None:
+                    rec["visible"] = _visible(scene, dg, worst_point, top)
                 records.append(rec)
                 if markers and rec["severity"] == "high" and vmd_frame not in markers_added:
                     scene.timeline_markers.new(f"clip_{vmd_frame}", frame=vmd_frame + 1)

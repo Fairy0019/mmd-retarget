@@ -7,7 +7,8 @@
 
 > 状态：**M1 stage 3/4 + M2 stage 1/2**（v0.0.2）。M0 数据层完成；
 > M1 已有比例缩放、承重判断、分窗脚锁、锚定平滑、脊柱链；M2 已有
-> BVH 穿模检测、severity、CSV 与回归 diff。手臂 IK、可见性尚未接入。
+> BVH 穿模检测、severity、CSV、回归 diff 与相机可见性。
+> 手臂 IK、骨盆补偿、缩略图尚未接入。
 > 进度见 [docs/PLAN.md](docs/PLAN.md)，实测报告见 `docs/reports/`。
 
 ---
