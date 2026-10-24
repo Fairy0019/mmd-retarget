@@ -135,4 +135,4 @@ def test_retarget_pass_through(tmp_path, capsys):
     out = parse_vmd(out_path.read_bytes())
     assert out.model_name == "Test"
     assert len(out.bone_frames) == 2
-    assert "stage 3" in capsys.readouterr().out
+    assert "stage 4" in capsys.readouterr().out
