@@ -34,6 +34,9 @@
 极向量与目标轴共线时，旧的垂直向量兜底算出了 `(0,0,0)`，导致肘部落回轴上、
 两骨长度不成立（手臂完全伸直时手腕位置回到错误值）。改为取任意稳定垂直方向。
 
+> 复盘见 [`docs/bugs/001-ik-degenerate-pole.md`](../bugs/001-ik-degenerate-pole.md)；
+> 同类空间口径问题见 [`002-twist-vs-local.md`](../bugs/002-twist-vs-local.md)。
+
 ---
 
 ## 2. M2 新增
