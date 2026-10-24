@@ -38,6 +38,8 @@ from .vmd import Vmd
 
 __all__ = [
     "CANONICAL_SCHEMA",
+    "forward_positions",
+    "forward_rotations",
     "build_canonical",
     "save_canonical",
     "load_canonical",
@@ -315,6 +317,58 @@ def forward_positions(
 
         for target in targets:
             out[target].append(world_p[target])
+    return out
+
+
+def forward_rotations(
+    profile: dict,
+    joints: dict,
+    root: dict,
+    frames: int,
+    targets: list[str],
+) -> dict[str, list[tuple[float, float, float, float]]]:
+    """对指定骨骼做 FK，返回每帧世界旋转（四元数 xyzw）。"""
+    rest = profile.get("rest", {})
+    mapping = profile.get("map", {})
+    targets = [t for t in targets if t in rest]
+    if not rest or not targets:
+        return {t: [] for t in targets}
+
+    order: list[str] = []
+    for target in targets:
+        for bone in _chain_to(profile, target):
+            if bone not in order:
+                order.append(bone)
+
+    bone_to_sem = _reverse_map(profile)
+    samples: dict[str, list] = {}
+    for bone in order:
+        sem = bone_to_sem.get(bone)
+        keys = joints.get(sem) if sem else None
+        if keys is None and bone in joints:
+            keys = joints[bone]
+        samples[bone] = keys or []
+
+    root_bone = mapping.get("root", "センター")
+    root_rot_keys = root.get("rot", [])
+    out: dict[str, list[tuple[float, float, float, float]]] = {t: [] for t in targets}
+
+    for f in range(frames):
+        world: dict[str, tuple[float, float, float, float]] = {}
+        for bone in order:
+            parent = rest[bone].get("parent")
+            if bone == root_bone:
+                local = sample_keys(root_rot_keys, f, quat=True)  # type: ignore[assignment]
+            else:
+                local = sample_keys(samples[bone], f, quat=True) if samples[bone] else _IDENTITY
+            if parent and parent in world:
+                q = qmul(world[parent], local)
+            else:
+                q = local
+            n = math.sqrt(sum(v * v for v in q)) or 1.0
+            world[bone] = (q[0] / n, q[1] / n, q[2] / n, q[3] / n)
+        for target in targets:
+            out[target].append(world[target])
     return out
 
 

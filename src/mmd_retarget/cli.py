@@ -113,6 +113,13 @@ def cmd_retarget(args: argparse.Namespace) -> int:
         print(f"dropped   : {len(out.dropped_bones)} extra bones (目标模型没有)")
     if missing:
         print(f"unmapped  : {len(missing)} semantics 在目标 profile 中缺失")
+    arm = stats.get("arm_ik", {})
+    if arm.get("enabled"):
+        print(
+            f"arm ik    : {arm.get('sides', 0)} sides, reach clamp {arm.get('reach_clamped', 0)}, "
+            f"wrist error mean {arm.get('mean_wrist_error', 0.0):.3f} / "
+            f"max {arm.get('max_wrist_error', 0.0):.3f} units"
+        )
     if stats.get("chain_split"):
         print(f"spine     : split across {len(stats['chain_split'])} target bones "
               f"({', '.join(stats['chain_split'])})")
@@ -135,7 +142,7 @@ def cmd_retarget(args: argparse.Namespace) -> int:
             f"ramp {smooth['ramped_frames']} frames, drop {smooth['dropped_smoothing']} chunks, "
             f"drift {smooth['locked_drift']:.2e}"
         )
-    print("note      : M1 stage 3（比例 + 承重 + 脚锁 + 锚定平滑 + 脊柱链）")
+    print("note      : M1 stage 4（比例 + 承重 + 脚锁 + 平滑 + 脊柱链 + 手臂 IK）")
     print(f"written   : {args.out}")
     return 0
 

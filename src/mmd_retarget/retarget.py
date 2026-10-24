@@ -17,13 +17,14 @@ import copy
 import math
 from typing import Any
 
-from .canonical import forward_positions, qslerp, sample_keys
+from .canonical import forward_positions, forward_rotations, qmul, qrot, qslerp, sample_keys
 
 __all__ = [
     "DEFAULT_CONFIG",
     "SPINE_CHAIN",
     "height_scale",
     "retarget_rotations",
+    "retarget_arms",
     "retarget_motion",
     "contact_slide_stats",
 ]
@@ -49,6 +50,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_support_drift_m": 0.12,
         # 粗略的人体身高，用于米制阈值换算。
         "assumed_height_m": 1.6,
+    },
+    "arm_ik": {
+        "enabled": True,
     },
     "smoothing": {
         # 锚定式：锁定帧是硬约束，只改未锁定段（见报告 09/10）。
@@ -123,6 +127,157 @@ def retarget_rotations(joints: dict, target: dict) -> tuple[dict, list[str]]:
                 split.append(name)
         i = j
     return out, split
+
+
+def _qinv(q):
+    return (-q[0], -q[1], -q[2], q[3])
+
+
+def _qfrom_to(a, b):
+    """最短弧：把单位向量 a 转到 b 的四元数。"""
+    d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    if d > 1.0 - 1e-9:
+        return _IDENTITY_Q
+    if d < -1.0 + 1e-9:
+        # 反向：任取一个垂直轴转 180°
+        axis = (0.0, 1.0, 0.0) if abs(a[1]) < 0.9 else (1.0, 0.0, 0.0)
+        cx = a[1] * axis[2] - a[2] * axis[1]
+        cy = a[2] * axis[0] - a[0] * axis[2]
+        cz = a[0] * axis[1] - a[1] * axis[0]
+        n = math.sqrt(cx * cx + cy * cy + cz * cz) or 1.0
+        return (cx / n, cy / n, cz / n, 0.0)
+    cx = a[1] * b[2] - a[2] * b[1]
+    cy = a[2] * b[0] - a[0] * b[2]
+    cz = a[0] * b[1] - a[1] * b[0]
+    w = 1.0 + d
+    n = math.sqrt(cx * cx + cy * cy + cz * cz + w * w) or 1.0
+    return (cx / n, cy / n, cz / n, w / n)
+
+
+def _norm(v):
+    n = math.sqrt(sum(x * x for x in v)) or 1.0
+    return (v[0] / n, v[1] / n, v[2] / n)
+
+
+def retarget_arms(
+    motion: dict, source_motion: dict, source: dict, target: dict, *, scale: float
+) -> dict:
+    """两骨解析 IK：把源手腕世界轨迹搬到目标手臂。
+
+    只处理 upperArm / lowerArm 两个关节；twist 骨保持 identity，
+    hand 的局部旋转沿用源（末端朝向不保证，但不影响手腕位置）。
+    """
+    frames = int(motion.get("frames", 0))
+    smap, tmap = source.get("map", {}), target.get("map", {})
+    srest, trest = source.get("rest", {}), target.get("rest", {})
+    stats = {
+        "sides": 0,
+        "reach_clamped": 0,
+        "mean_wrist_error": 0.0,
+        "max_wrist_error": 0.0,
+    }
+
+    # 源动作的腕捩/手捩关键帧会让“上臂-前臂”不再是两段直线；
+    # 两骨 IK 解算前先清掉它们，否则手腕会偏几厘米。
+    for sem in list(motion.get("joints", {})):
+        if "Twist" in sem:
+            motion["joints"].pop(sem, None)
+
+    for side in ("left", "right"):
+        su, sl, sh = (f"{side}UpperArm", f"{side}LowerArm", f"{side}Hand")
+        if not all(k in smap and k in tmap for k in (su, sl, sh)):
+            continue
+        sbones = [smap[su], smap[sl], smap[sh]]
+        t_up, t_low, t_hand = tmap[su], tmap[sl], tmap[sh]
+        if not all(b in srest for b in sbones) or not all(b in trest for b in (t_up, t_low, t_hand)):
+            continue
+
+        s_pos = forward_positions(
+            source,
+            source_motion.get("joints", {}),
+            source_motion.get("translations", {}),
+            source_motion.get("root", {}),
+            frames,
+            sbones,
+        )
+        if not s_pos.get(sbones[0]):
+            continue
+        t_pos = forward_positions(
+            target, motion.get("joints", {}), motion.get("translations", {}),
+            motion.get("root", {}), frames, [t_up],
+        )
+        if not t_pos.get(t_up):
+            continue
+        parent_bone = trest[t_up].get("parent")
+        parent_q = (
+            forward_rotations(target, motion.get("joints", {}), motion.get("root", {}), frames, [parent_bone]).get(parent_bone, [])
+            if parent_bone
+            else []
+        )
+
+        S0 = tuple(trest[t_up]["head"])
+        E0 = tuple(trest[t_low]["head"])
+        W0 = tuple(trest[t_hand]["head"])
+        L1 = math.dist(S0, E0)
+        L2 = math.dist(E0, W0)
+        u0 = _norm((E0[0] - S0[0], E0[1] - S0[1], E0[2] - S0[2]))
+        v0 = _norm((W0[0] - E0[0], W0[1] - E0[1], W0[2] - E0[2]))
+
+        up_keys, low_keys = [], []
+        goals = []
+        for f in range(frames):
+            Ss, Es, Ws = s_pos[sbones[0]][f], s_pos[sbones[1]][f], s_pos[sbones[2]][f]
+            S = t_pos[t_up][f]
+            T = (S[0] + (Ws[0] - Ss[0]) * scale,
+                 S[1] + (Ws[1] - Ss[1]) * scale,
+                 S[2] + (Ws[2] - Ss[2]) * scale)
+            goal = T
+            vec = (T[0] - S[0], T[1] - S[1], T[2] - S[2])
+            d = math.sqrt(sum(x * x for x in vec)) or 1e-9
+            max_d = L1 + L2 - 1e-4
+            if d > max_d:
+                k = max_d / d
+                T = (S[0] + vec[0] * k, S[1] + vec[1] * k, S[2] + vec[2] * k)
+                vec = (T[0] - S[0], T[1] - S[1], T[2] - S[2])
+                d = max_d
+                stats["reach_clamped"] += 1
+            axis = _norm(vec)
+            a = (L1 * L1 - L2 * L2 + d * d) / (2 * d)
+            h2 = max(0.0, L1 * L1 - a * a)
+            h = math.sqrt(h2)
+            base = (S[0] + axis[0] * a, S[1] + axis[1] * a, S[2] + axis[2] * a)
+
+            pole = (Es[0] - Ss[0], Es[1] - Ss[1], Es[2] - Ss[2])
+            dot = pole[0] * axis[0] + pole[1] * axis[1] + pole[2] * axis[2]
+            perp = (pole[0] - axis[0] * dot, pole[1] - axis[1] * dot, pole[2] - axis[2] * dot)
+            if sum(x * x for x in perp) < 1e-9:
+                perp = (axis[1] * axis[1] + axis[2] * axis[2], -axis[0] * axis[1], -axis[0] * axis[2])
+            perp = _norm(perp)
+            E = (base[0] + perp[0] * h, base[1] + perp[1] * h, base[2] + perp[2] * h)
+
+            u1 = _norm((E[0] - S[0], E[1] - S[1], E[2] - S[2]))
+            v1 = _norm((T[0] - E[0], T[1] - E[1], T[2] - E[2]))
+            pq = parent_q[f] if parent_q else _IDENTITY_Q
+            local_u = _qfrom_to(u0, qrot(_qinv(pq), u1))
+            world_u = qmul(pq, local_u)
+            local_v = _qfrom_to(v0, qrot(_qinv(world_u), v1))
+            up_keys.append([float(f), *local_u])
+            low_keys.append([float(f), *local_v])
+            goals.append(goal)
+
+        motion.setdefault("joints", {})[su] = up_keys
+        motion["joints"][sl] = low_keys
+        actual = forward_positions(
+            target, motion.get("joints", {}), motion.get("translations", {}),
+            motion.get("root", {}), frames, [t_hand],
+        ).get(t_hand, [])
+        errs = [math.dist(actual[f], goals[f]) for f in range(min(len(actual), len(goals)))]
+        if errs:
+            stats["mean_wrist_error"] = max(stats["mean_wrist_error"], sum(errs) / len(errs))
+            stats["max_wrist_error"] = max(stats["max_wrist_error"], max(errs))
+        stats["sides"] += 1
+
+    return stats
 
 
 def _scale_keys(keys: list[list[float]], scale: float) -> list[list[float]]:
@@ -272,6 +427,12 @@ def retarget_motion(
     out = copy.deepcopy(canonical)
     scale = height_scale(source, target)
     out["joints"], split = retarget_rotations(out.get("joints", {}), target)
+    arm_stats = {"enabled": False}
+    if cfg.get("arm_ik", {}).get("enabled", True):
+        arm_stats = {
+            "enabled": True,
+            **retarget_arms(out, canonical, source, target, scale=height_scale(source, target)),
+        }
     s_mapping = source.get("map", {})
     t_mapping = target.get("map", {})
     s_rest = source.get("rest", {})
@@ -301,6 +462,7 @@ def retarget_motion(
         "skipped_reach": 0,
         "max_reach_ratio": 0.0,
         "chain_split": split,
+        "arm_ik": arm_stats,
     }
 
     if not cfg["foot_lock"].get("enabled", True):

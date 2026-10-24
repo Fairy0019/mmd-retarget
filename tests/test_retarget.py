@@ -194,3 +194,51 @@ def test_foot_lock_smoothing_reduces_jump():
     assert stats["series"] == 1
     assert stats["max_after"] < stats["max_before"]
     assert stats["max_after"] <= 0.13 + 1e-6
+
+
+def test_qfrom_to_basic():
+    from mmd_retarget.retarget import _qfrom_to
+    from mmd_retarget.canonical import qrot
+
+    q = _qfrom_to((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+    assert qrot(q, (1.0, 0.0, 0.0)) == pytest.approx((0.0, 1.0, 0.0), abs=1e-6)
+    q180 = _qfrom_to((1.0, 0.0, 0.0), (-1.0, 0.0, 0.0))
+    assert qrot(q180, (1.0, 0.0, 0.0)) == pytest.approx((-1.0, 0.0, 0.0), abs=1e-6)
+
+
+def _arm_profiles():
+    return {
+        "map": {
+            "root": "センター",
+            "leftUpperArm": "腕",
+            "leftLowerArm": "ひじ",
+            "leftHand": "手",
+        },
+        "rest": {
+            "センター": {"head": [0.0, 0.0, 0.0], "parent": None},
+            "腕": {"head": [0.0, 0.0, 0.0], "parent": "センター"},
+            "ひじ": {"head": [1.0, 0.0, 0.0], "parent": "腕"},
+            "手": {"head": [2.0, 0.0, 0.0], "parent": "ひじ"},
+        },
+    }
+
+
+def test_arm_ik_reaches_source_wrist():
+    from mmd_retarget.canonical import forward_positions
+    from mmd_retarget.retarget import retarget_arms
+
+    profile = _arm_profiles()
+    # 源上臂绕 Z 转 90°，手腕应到 (0,2,0)
+    src = {
+        "frames": 1,
+        "joints": {"leftUpperArm": [[0, 0.0, 0.0, 0.7071068, 0.7071068]]},
+        "translations": {},
+        "root": {"pos": [], "rot": []},
+    }
+    out = {"frames": 1, "joints": {}, "translations": {}, "root": {"pos": [], "rot": []}}
+    stats = retarget_arms(out, src, profile, profile, scale=1.0)
+    assert stats["sides"] == 1
+    wrist = forward_positions(
+        profile, out["joints"], {}, {"pos": [], "rot": []}, 1, ["手"]
+    )["手"][0]
+    assert wrist == pytest.approx((0.0, 2.0, 0.0), abs=1e-3)
