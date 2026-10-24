@@ -133,7 +133,13 @@ def cmd_retarget(args: argparse.Namespace) -> int:
             f"twist     : {twist.get('bones', 0)} bones restored, "
             f"mean {twist.get('mean_abs_deg', 0.0):.1f} deg"
         )
-    if stats.get("pelvic_shift_frames"):
+    if stats.get("pelvic_applied"):
+        print(
+            f"pelvis    : applied {stats['pelvic_applied']} chunks, "
+            f"max root shift {stats.get('pelvic_max_shift_m', 0.0) * 1000:.1f} mm, "
+            f"residual {stats.get('pelvic_residual', 0)}"
+        )
+    elif stats.get("pelvic_shift_frames"):
         print(
             f"pelvis    : {stats['pelvic_shift_frames']} unreachable frames need "
             f"up to {stats['pelvic_shift_max_m'] * 1000:.1f} mm root shift "

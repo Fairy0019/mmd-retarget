@@ -42,8 +42,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "reach_margin": 0.02,
         # 默认不硬拉：够不到就跳过并报告，交给人工/下一层骨盆补偿。
         "clamp_unreachable": False,
-        # 骨盆补偿目前只做诊断（需要移动 root 并同步足 IK，属 M1 stage 6）。
-        "pelvic_compensation": "suggest",
+        # 骨盆补偿：把 root 朝支撑脚方向移动，使不可达的脚锁变得可达。
+        # mode: "apply" | "suggest" | "off"；单次最大位移 8 cm。
+        "pelvic_compensation": {
+            "mode": "apply",
+            "max_shift_m": 0.08,
+            "smooth_window": 2,
+            "max_rate_m_per_frame": 0.008,
+        },
         # 单个锁定窗口内允许的源脚漂移；超过则判为“迈步”不锁。
         "max_lock_drift_m": 0.04,
         "chunk_frames": 20,
@@ -753,6 +759,9 @@ def retarget_motion(
         "max_reach_ratio": 0.0,
         "pelvic_shift_frames": 0,
         "pelvic_shift_max_m": 0.0,
+        "pelvic_applied": 0,
+        "pelvic_residual": 0,
+        "pelvic_max_shift_m": 0.0,
         "chain_split": split,
         "arm_ik": arm_stats,
         "twist": twist_stats,
@@ -774,6 +783,17 @@ def retarget_motion(
     )
     support_ratio_min = float(fl.get("support_ratio", 0.5))
     labels = support_labels(out, target)
+    pc_cfg = fl.get("pelvic_compensation", "suggest")
+    if isinstance(pc_cfg, str):
+        pc_mode, pc_max_m, pc_window, pc_rate_m = pc_cfg, 0.08, 2, 0.008
+    else:
+        pc_mode = pc_cfg.get("mode", "apply")
+        pc_max_m = float(pc_cfg.get("max_shift_m", 0.08))
+        pc_window = int(pc_cfg.get("smooth_window", 2))
+        pc_rate_m = float(pc_cfg.get("max_rate_m_per_frame", 0.008))
+    pc_max_units = pc_max_m * target_height / assumed_h
+    pc_rate = pc_rate_m * target_height / assumed_h
+    pending_pelvis: list[dict] = []
 
     geometry = {
         "leftFoot": _leg_geometry(target, "left"),
@@ -853,6 +873,32 @@ def retarget_motion(
                         stats["pelvic_shift_max_m"] = max(
                             stats["pelvic_shift_max_m"], deficit * 1.6 / stats["target_height"]
                         )
+                    d = math.dist(hip_mean, locked) or 1e-9
+                    delta = (
+                        (locked[0] - hip_mean[0]) / d * deficit,
+                        (locked[1] - hip_mean[1]) / d * deficit,
+                        (locked[2] - hip_mean[2]) / d * deficit,
+                    )
+                    if (
+                        pc_mode == "apply"
+                        and deficit > 0.0
+                        and deficit <= pc_max_units
+                        and hip_bone
+                    ):
+                        pending_pelvis.append(
+                            {
+                                "contact": contact,
+                                "ik_sem": ik_sem,
+                                "t_head": t_head,
+                                "hip_bone": hip_bone,
+                                "start": chunk_start,
+                                "end": chunk_end,
+                                "locked": locked,
+                                "delta": delta,
+                                "leg_len": leg_len,
+                            }
+                        )
+                        continue
                     if clamp:
                         locked = _clamp_to_reach(locked, hip_mean, leg_len * (1.0 - margin))
                         stats["clamped"] += 1
@@ -868,6 +914,11 @@ def retarget_motion(
 
         contact["locked_chunks"] = locked_chunks
         stats["locked_frames"] += sum(e - s0 + 1 for s0, e, _ in locked_chunks)
+
+    if pending_pelvis and pc_mode == "apply":
+        _apply_pelvis_compensation(
+            out, target, pending_pelvis, stats, pc_window, pc_rate, margin, clamp
+        )
 
     stats["locked_coverage"] = (
         stats["locked_frames"] / (int(out.get("frames", 0)) * 2)
@@ -891,6 +942,92 @@ def retarget_motion(
 
     out["meta"]["retarget"] = stats
     return out
+
+
+def _apply_pelvis_compensation(out, target, pending, stats, window, rate, margin, clamp):
+    """把 root 朝支撑脚方向平移，使 pending 的脚锁变得可达。
+
+    脚 IK 的目标是 root 相对量（足IK親不在 センター 下），所以移动 root
+    只动骨盆/身体，不动脚；这正是“骨盆补偿”需要的行为。
+    """
+    frames = int(out.get("frames", 0))
+    if frames <= 0:
+        return
+    root = out.setdefault("root", {})
+    keys = root.get("pos", [])
+    delta = [[0.0, 0.0, 0.0] for _ in range(frames)]
+    count = [0] * frames
+    for p in pending:
+        for f in range(int(p["start"]), int(p["end"]) + 1):
+            if 0 <= f < frames:
+                delta[f][0] += p["delta"][0]
+                delta[f][1] += p["delta"][1]
+                delta[f][2] += p["delta"][2]
+                count[f] += 1
+    # 重叠时取平均，再做盒式平滑，避免窗口边界跳变
+    for f in range(frames):
+        if count[f] > 1:
+            delta[f] = [v / count[f] for v in delta[f]]
+    if window > 0:
+        raw = [tuple(d) for d in delta]
+        delta = [
+            tuple(
+                sum(raw[j][i] for j in range(max(0, f - window), min(frames, f + window + 1)))
+                / (min(frames, f + window + 1) - max(0, f - window))
+                for i in range(3)
+            )
+            for f in range(frames)
+        ]
+    if rate > 0:
+        for f in range(1, frames):
+            delta[f] = _limit_step(tuple(delta[f - 1]), tuple(delta[f]), rate)
+        for f in range(frames - 2, -1, -1):
+            delta[f] = _limit_step(tuple(delta[f + 1]), tuple(delta[f]), rate)
+    if not any(abs(v) > 1e-9 for d in delta for v in d):
+        return
+
+    base = [sample_keys(keys, f, quat=False) for f in range(frames)] if keys else [(0.0, 0.0, 0.0)] * frames
+    dense = [[float(f), base[f][0] + delta[f][0], base[f][1] + delta[f][1], base[f][2] + delta[f][2]] for f in range(frames)]
+    root["pos"] = dense
+
+    # 用新的 root 重新算髋位置
+    hips = forward_positions(
+        target, out.get("joints", {}), out.get("translations", {}), root, frames,
+        sorted({p["hip_bone"] for p in pending}),
+    )
+    max_shift = max((math.sqrt(sum(v * v for v in d)) for d in delta), default=0.0)
+    stats["pelvic_max_shift_m"] = round(
+        max_shift * 1.6 / max(stats.get("target_height", 1.6), 1e-6), 5
+    )
+
+    for p in pending:
+        series = hips.get(p["hip_bone"], [])
+        if not series:
+            stats["pelvic_residual"] += 1
+            continue
+        hip = tuple(
+            sum(series[f][i] for f in range(p["start"], p["end"] + 1))
+            / (p["end"] - p["start"] + 1)
+            for i in range(3)
+        )
+        locked = p["locked"]
+        ratio = math.dist(hip, locked) / p["leg_len"] if p["leg_len"] > 1e-9 else 0.0
+        if ratio > 1.0 + 1e-6:
+            if not clamp:
+                stats["pelvic_residual"] += 1
+                stats["skipped_reach"] += 1
+                continue
+            locked = _clamp_to_reach(locked, hip, p["leg_len"] * (1.0 - margin))
+            stats["clamped"] += 1
+        t_head = p["t_head"]
+        translation = (locked[0] - t_head[0], locked[1] - t_head[1], locked[2] - t_head[2])
+        out["translations"][p["ik_sem"]] = _upsert_translation(
+            out["translations"][p["ik_sem"]], int(p["start"]), int(p["end"]), translation
+        )
+        p["contact"].setdefault("locked_chunks", []).append(
+            [int(p["start"]), int(p["end"]), [round(v, 6) for v in locked]]
+        )
+        stats["pelvic_applied"] += 1
 
 
 def contact_slide_stats(motion: dict, profile: dict) -> dict:

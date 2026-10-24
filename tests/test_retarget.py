@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from mmd_retarget.retarget import (
@@ -362,3 +364,55 @@ def test_pelvic_shift_is_reported_for_unreachable_contact():
     assert stats["skipped_reach"] == 1
     assert stats["pelvic_shift_frames"] == 1
     assert stats["pelvic_shift_max_m"] > 0.0
+
+
+def test_pelvic_compensation_moves_root_and_locks():
+    from mmd_retarget.canonical import forward_positions
+
+    src, tgt = make_profiles(1.0)
+    # 脚只比腿长多 1 个单位：默认 8cm 上限内，应自动补
+    motion = make_canonical(contact_pos=(0.5, 0.0, 2.5), ik_keys=[[0, 0.0, 0.0, 2.5]])
+    out = retarget_motion(motion, src, tgt)
+    stats = out["meta"]["retarget"]
+    assert stats["pelvic_applied"] == 1
+    assert stats["skipped_reach"] == 0
+    assert stats["pelvic_max_shift_m"] > 0.0
+    # root 必须真的动了
+    assert out["root"]["pos"]
+    hip = tgt["map"]["leftUpperLeg"]
+    foot = tgt["map"]["leftFootIK"]
+    pos = forward_positions(
+        tgt, out["joints"], out["translations"], out["root"], out["frames"], [hip, foot]
+    )
+    for f in range(out["frames"]):
+        assert math.dist(pos[hip][f], pos[foot][f]) <= 5.1 * 1.0 + 1e-3
+
+
+def test_pelvic_compensation_can_be_disabled():
+    src, tgt = make_profiles(1.0)
+    motion = make_canonical(contact_pos=(0.5, 0.0, 2.5), ik_keys=[[0, 0.0, 0.0, 2.5]])
+    out = retarget_motion(
+        motion, src, tgt,
+        config={"foot_lock": {"pelvic_compensation": {"mode": "suggest"}}},
+    )
+    stats = out["meta"]["retarget"]
+    assert stats["pelvic_applied"] == 0
+    assert stats["skipped_reach"] == 1
+
+
+def test_two_bone_length_invariants():
+    """Bug 001 的直接回归：任意目标/极向量下 |E-S|=L1、|T-E|=L2。"""
+    from mmd_retarget.retarget import _solve_two_bone
+
+    S = (0.0, 0.0, 0.0)
+    cases = [
+        ((2.0, 0.0, 0.0), (0.0, 1.0, 0.0)),    # 伸直
+        ((2.0, 0.0, 0.0), (2.0, 0.0, 0.0)),    # 伸直 + 极向量共线
+        ((1.5, 0.0, 0.0), (1.5, 0.0, 0.0)),    # 共线
+        ((0.0, 0.0, 2.0), (0.0, 0.0, 0.0)),    # 零极向量
+        ((1.0, 1.0, 1.0), (1.0, 2.0, 0.0)),    # 一般情况
+    ]
+    for T, pole in cases:
+        T2, E = _solve_two_bone(S, T, 1.0, 1.0, pole)
+        assert math.dist(S, E) == pytest.approx(1.0, abs=1e-6)
+        assert math.dist(T2, E) == pytest.approx(1.0, abs=1e-6)
