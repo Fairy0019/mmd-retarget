@@ -20,6 +20,7 @@ from .canonical import build_canonical, load_canonical, save_canonical
 from .retarget import contact_slide_stats, retarget_motion
 from .pmx import PmxError, read_pmx
 from .skeleton import load_profile, write_profile
+from .validate import diff_reports, read_csv, summarize, write_csv
 from .vmd import VmdError, read_vmd, write_vmd
 from .writer import canonical_to_vmd
 
@@ -129,6 +130,48 @@ def cmd_retarget(args: argparse.Namespace) -> int:
         )
     print("note      : M1 stage 2（比例 + 脚锁 + 脊柱链）；平滑/手臂 IK/间隙尚未接入")
     print(f"written   : {args.out}")
+    return 0
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    try:
+        import bpy  # noqa: F401
+    except ImportError:
+        print("error: validate 需要 Blender（bpy 不可用）", file=sys.stderr)
+        print("用法: blender -b --python tools/blender_validate.py -- ...", file=sys.stderr)
+        return 2
+
+    from .validate_blender import run_validation
+
+    try:
+        records = run_validation(
+            model_path=args.model,
+            motion_path=args.motion,
+            out_csv=args.out,
+            step=args.step,
+            start=args.start,
+            end=args.end,
+            threshold_mm=args.threshold,
+            markers=not args.no_markers,
+        )
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    stats = summarize(records)
+    print(f"records   : {stats['records']}")
+    print(f"frames    : {stats['frames']}")
+    print(f"severity  : {stats['by_severity']}")
+    print(f"max depth : {stats['max_depth_mm']:.2f} mm")
+    print(f"written   : {args.out}")
+
+    if args.diff:
+        old = read_csv(args.diff)
+        d = diff_reports(old, records)
+        print(
+            f"diff      : new {len(d['new'])}, fixed {len(d['fixed'])}, "
+            f"worse {len(d['worse'])}, better {len(d['better'])}"
+        )
     return 0
 
 
@@ -255,11 +298,18 @@ def build_parser() -> argparse.ArgumentParser:
     ph.add_argument("-c", "--config", default=None)
     ph.set_defaults(func=cmd_stub)
 
-    v = sub.add_parser("validate", help="detect and report clipping")
+    v = sub.add_parser("validate", help="detect and report clipping (Blender only)")
     v.add_argument("-c", "--camera", default="final")
     v.add_argument("-o", "--out", default="report.csv")
-    v.add_argument("--frames", default=None)
-    v.set_defaults(func=cmd_stub)
+    v.add_argument("--model", default=None, help="import this PMX before validating")
+    v.add_argument("--motion", default=None, help="import this VMD before validating")
+    v.add_argument("--step", type=int, default=20, help="sample every N frames")
+    v.add_argument("--start", type=int, default=0)
+    v.add_argument("--end", type=int, default=None)
+    v.add_argument("--threshold", type=float, default=2.0, help="min depth mm")
+    v.add_argument("--diff", default=None, help="compare against an old CSV")
+    v.add_argument("--no-markers", action="store_true")
+    v.set_defaults(func=cmd_validate)
 
     return p
 
