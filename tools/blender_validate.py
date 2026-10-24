@@ -40,6 +40,7 @@ def main() -> int:
     ap.add_argument("--visibility-points", type=int, default=3)
     ap.add_argument("--camera", default=None, help="camera name(s), comma separated")
     ap.add_argument("--thumbnails", default=None)
+    ap.add_argument("--save-blend", default=None)
     ap.add_argument("--contact-sheet", default=None)
     ap.add_argument("--parts-config", default=None)
     args = ap.parse_args(argv)

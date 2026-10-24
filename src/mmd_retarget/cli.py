@@ -196,6 +196,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
             camera=args.camera,
             visibility_points=args.visibility_points,
             thumbnails=args.thumbnails,
+            save_blend=args.save_blend,
             contact_sheet=args.contact_sheet,
             parts_config=args.parts_config,
         )
@@ -422,6 +423,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="how many deepest points to test per pair (default 3)",
     )
     v.add_argument("--thumbnails", default=None, help="render high frames to this directory")
+    v.add_argument("--save-blend", default=None, help="save scene (markers/camera) to .blend")
     v.add_argument(
         "--contact-sheet", default=None,
         help="write an HTML contact sheet (requires --thumbnails)",

@@ -193,6 +193,7 @@ def run_validation(
     thumb_size: int = 320,
     contact_sheet: str | None = None,
     parts_config: str | None = None,
+    save_blend: str | None = None,
     assumed_height_m: float = 1.6,
 ) -> list[dict]:
     import bpy
@@ -330,6 +331,10 @@ def run_validation(
     if contact_sheet and thumbnails:
         count = write_contact_sheet(records, thumbnails, contact_sheet)
         print(f"[validate] contact sheet: {count} frames -> {contact_sheet}")
+    if save_blend:
+        Path(save_blend).parent.mkdir(parents=True, exist_ok=True)
+        bpy.ops.wm.save_as_mainfile(filepath=str(Path(save_blend).resolve()))
+        print(f"[validate] scene saved: {save_blend} (markers/camera persisted)")
     elapsed = time.perf_counter() - t0
     print(f"[validate] done: {len(records)} records -> {out_csv} ({elapsed:.1f}s)")
     return records

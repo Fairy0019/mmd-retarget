@@ -149,6 +149,7 @@ blender -b --python tools/blender_cli.py -- validate \
 | `--thumbnails` | high 帧 320×320 缩略图（Cycles CPU） |
 | `--contact-sheet` | HTML 网格，按 severity 排序 |
 | `--parts-config` | 覆盖部位规则（换非日文命名模型） |
+| `--save-blend` | 保存场景（marker/相机持久化） |
 
 输出：
 
