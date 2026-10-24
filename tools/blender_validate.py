@@ -36,6 +36,9 @@ def main() -> int:
     ap.add_argument("--threshold-mm", type=float, default=2.0)
     ap.add_argument("--max-pairs", type=int, default=200)
     ap.add_argument("--no-markers", action="store_true")
+    ap.add_argument("--visibility", action="store_true")
+    ap.add_argument("--camera", default=None)
+    ap.add_argument("--thumbnails", default=None)
     args = ap.parse_args(argv)
 
     run_validation(
@@ -48,6 +51,9 @@ def main() -> int:
         threshold_mm=args.threshold_mm,
         max_pairs=args.max_pairs,
         markers=not args.no_markers,
+        visibility=args.visibility,
+        camera=args.camera,
+        thumbnails=args.thumbnails,
     )
     return 0
 

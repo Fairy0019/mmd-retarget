@@ -12,6 +12,7 @@ from pathlib import Path
 
 __all__ = [
     "SEVERITY_LEVELS",
+    "regression_ok",
     "classify",
     "make_record",
     "write_csv",
@@ -151,6 +152,15 @@ def diff_reports(old: list[dict], new: list[dict], *, tolerance_mm: float = 1.0)
         if key not in b:
             result["fixed"].append({**dict(zip(("frame", "part_a", "part_b"), key)), "depth_mm": depth})
     return result
+
+
+def regression_ok(diff: dict, *, max_new: int | None = None, max_worse: int | None = None) -> bool:
+    """回归门槛：new/worse 数量超过上限则返回 False。None 表示不限制。"""
+    if max_new is not None and len(diff["new"]) > max_new:
+        return False
+    if max_worse is not None and len(diff["worse"]) > max_worse:
+        return False
+    return True
 
 
 def summarize(records: list[dict]) -> dict:

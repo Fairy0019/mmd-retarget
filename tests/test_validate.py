@@ -74,3 +74,13 @@ def test_summarize():
     assert s["frames"] == 2
     assert s["by_severity"] == {"high": 1, "medium": 1, "low": 1}
     assert s["max_depth_mm"] == 40.0
+
+
+def test_regression_ok():
+    from mmd_retarget.validate import regression_ok
+
+    d = {"new": [1, 2], "fixed": [], "worse": [1], "better": []}
+    assert regression_ok(d) is True
+    assert regression_ok(d, max_new=2, max_worse=1) is True
+    assert regression_ok(d, max_new=1) is False
+    assert regression_ok(d, max_worse=0) is False

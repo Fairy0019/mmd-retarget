@@ -20,7 +20,14 @@ from .canonical import build_canonical, load_canonical, save_canonical
 from .retarget import contact_slide_stats, retarget_motion
 from .pmx import PmxError, read_pmx
 from .skeleton import load_profile, write_profile
-from .validate import diff_reports, read_csv, summarize, write_csv
+from .validate import (
+    diff_reports,
+    read_csv,
+    regression_ok,
+    summarize,
+    write_csv,
+    write_json,
+)
 from .vmd import VmdError, read_vmd, write_vmd
 from .writer import canonical_to_vmd
 
@@ -128,7 +135,7 @@ def cmd_retarget(args: argparse.Namespace) -> int:
             f"ramp {smooth['ramped_frames']} frames, drop {smooth['dropped_smoothing']} chunks, "
             f"drift {smooth['locked_drift']:.2e}"
         )
-    print("note      : M1 stage 2（比例 + 脚锁 + 脊柱链）；平滑/手臂 IK/间隙尚未接入")
+    print("note      : M1 stage 3（比例 + 承重 + 脚锁 + 锚定平滑 + 脊柱链）")
     print(f"written   : {args.out}")
     return 0
 
@@ -155,6 +162,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
             markers=not args.no_markers,
             visibility=args.visibility,
             camera=args.camera,
+            thumbnails=args.thumbnails,
         )
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -166,6 +174,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
     print(f"severity  : {stats['by_severity']}")
     print(f"max depth : {stats['max_depth_mm']:.2f} mm")
     print(f"written   : {args.out}")
+    if args.json:
+        write_json(records, args.json)
+        print(f"json      : {args.json}")
 
     if args.diff:
         old = read_csv(args.diff)
@@ -174,6 +185,14 @@ def cmd_validate(args: argparse.Namespace) -> int:
             f"diff      : new {len(d['new'])}, fixed {len(d['fixed'])}, "
             f"worse {len(d['worse'])}, better {len(d['better'])}"
         )
+        if not regression_ok(d, max_new=args.max_new, max_worse=args.max_worse):
+            print(
+                f"regression: FAILED (max_new={args.max_new}, max_worse={args.max_worse})",
+                file=sys.stderr,
+            )
+            return 1
+        if args.max_new is not None or args.max_worse is not None:
+            print("regression: OK")
     return 0
 
 
@@ -310,8 +329,12 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--end", type=int, default=None)
     v.add_argument("--threshold", type=float, default=2.0, help="min depth mm")
     v.add_argument("--diff", default=None, help="compare against an old CSV")
+    v.add_argument("--max-new", type=int, default=None, help="fail if new records exceed N")
+    v.add_argument("--max-worse", type=int, default=None, help="fail if worse records exceed N")
     v.add_argument("--no-markers", action="store_true")
     v.add_argument("--visibility", action="store_true", help="ray-cast visibility check")
+    v.add_argument("--thumbnails", default=None, help="render high frames to this directory")
+    v.add_argument("--json", default=None, help="also write records as JSON")
     v.set_defaults(func=cmd_validate)
 
     return p

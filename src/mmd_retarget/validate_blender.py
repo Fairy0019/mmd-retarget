@@ -190,6 +190,8 @@ def run_validation(
     markers: bool = True,
     visibility: bool = False,
     camera: str | None = None,
+    thumbnails: str | None = None,
+    thumb_size: int = 320,
     assumed_height_m: float = 1.6,
 ) -> list[dict]:
     import bpy
@@ -218,8 +220,32 @@ def run_validation(
     arm = arms[0]
 
     scene = bpy.context.scene
-    if visibility:
+    if visibility or thumbnails:
         _setup_camera(scene, camera, obj)
+    if thumbnails:
+        Path(thumbnails).mkdir(parents=True, exist_ok=True)
+        # Workbench 在无 GPU 的服务器上会因 SSBO 限制渲染出空图；
+        # Cycles CPU 虽然慢，但在 headless 下可靠。
+        scene.render.engine = "CYCLES"
+        scene.cycles.device = "CPU"
+        scene.cycles.samples = 8
+        scene.render.resolution_x = thumb_size
+        scene.render.resolution_y = thumb_size
+        scene.render.resolution_percentage = 100
+        scene.render.image_settings.file_format = "PNG"
+        if not any(o.type == "LIGHT" for o in bpy.data.objects):
+            light_data = bpy.data.lights.new("validate_sun", "SUN")
+            light_data.energy = 3.0
+            light = bpy.data.objects.new("validate_sun", light_data)
+            bpy.context.collection.objects.link(light)
+            light.rotation_euler = (0.9, 0.0, 0.6)
+        if scene.world is None:
+            scene.world = bpy.data.worlds.new("validate_world")
+        scene.world.use_nodes = True
+        bg = scene.world.node_tree.nodes.get("Background")
+        if bg:
+            bg.inputs[0].default_value = (0.05, 0.05, 0.07, 1.0)
+            bg.inputs[1].default_value = 0.5
     end = end if end is not None else scene.frame_end - 1
     start = max(start, 0)
     end = min(end, scene.frame_end - 1)
@@ -250,6 +276,7 @@ def run_validation(
             if polys:
                 bvhs[part] = BVHTree.FromPolygons(verts, polys, all_triangles=True)
 
+        high_this_frame = False
         for pa, pb in PART_PAIRS:
             if pa not in bvhs or pb not in bvhs:
                 continue
@@ -271,9 +298,15 @@ def run_validation(
                 if visibility and worst_point is not None:
                     rec["visible"] = _visible(scene, dg, worst_point, top)
                 records.append(rec)
+                if rec["severity"] == "high":
+                    high_this_frame = True
                 if markers and rec["severity"] == "high" and vmd_frame not in markers_added:
                     scene.timeline_markers.new(f"clip_{vmd_frame}", frame=vmd_frame + 1)
                     markers_added.add(vmd_frame)
+
+        if thumbnails and high_this_frame:
+            scene.render.filepath = str(Path(thumbnails) / f"clip_{vmd_frame:05d}.png")
+            bpy.ops.render.render(write_still=True)
 
         ev.to_mesh_clear()
         if n % 20 == 0:
