@@ -112,7 +112,8 @@ def cmd_retarget(args: argparse.Namespace) -> int:
         f"foot lock : {stats.get('locked', 0)}/{stats.get('chunks', 0)} chunks, "
         f"{stats.get('locked_frames', 0)} frames "
         f"({stats.get('locked_coverage', 0.0) * 100:.1f}%), "
-        f"skip drift {stats.get('skipped_drift', 0)} / reach {stats.get('skipped_reach', 0)}"
+        f"skip swing {stats.get('skipped_swing', 0)} / drift {stats.get('skipped_drift', 0)} "
+        f"/ reach {stats.get('skipped_reach', 0)}"
     )
     print(
         f"slide     : mean {before['mean_slide']:.4f} -> {after['mean_slide']:.4f} units/frame "
@@ -122,7 +123,9 @@ def cmd_retarget(args: argparse.Namespace) -> int:
     if smooth.get("enabled") and smooth.get("series"):
         print(
             f"smooth    : max step {smooth['max_before']:.3f} -> {smooth['max_after']:.3f} "
-            f"units/frame (limit {smooth['rate']:.3f})"
+            f"units/frame (limit {smooth['rate']:.3f}); "
+            f"ramp {smooth['ramped_frames']} frames, drop {smooth['dropped_smoothing']} chunks, "
+            f"drift {smooth['locked_drift']:.2e}"
         )
     print("note      : M1 stage 2（比例 + 脚锁 + 脊柱链）；平滑/手臂 IK/间隙尚未接入")
     print(f"written   : {args.out}")

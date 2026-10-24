@@ -43,12 +43,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # 单个锁定窗口内允许的源脚漂移；超过则判为“迈步”不锁。
         "max_lock_drift_m": 0.04,
         "chunk_frames": 20,
+        # 承重判断：窗口内至少多少比例是支撑脚才值得锁。
+        "support_ratio": 0.5,
+        # 支撑脚允许更大的源漂移（脚锁本来就是要消掉它）。
+        "max_support_drift_m": 0.12,
         # 粗略的人体身高，用于米制阈值换算。
         "assumed_height_m": 1.6,
     },
     "smoothing": {
-        # 实验结论：全局限速会把锁定窗口内部也拖走（见报告 08），暂默认关闭。
-        "enabled": False,
+        # 锚定式：锁定帧是硬约束，只改未锁定段（见报告 09/10）。
+        "enabled": True,
         "window": 2,
         "max_rate_m_per_frame": 0.01,
     },
@@ -137,6 +141,95 @@ def _upsert_translation(
     return sorted(kept + dense, key=lambda k: k[0])
 
 
+def foot_world_positions(
+    motion: dict, profile: dict, frames: int
+) -> dict[str, list[tuple[float, float, float]]]:
+    """每帧脚踝世界坐标：优先足 IK，缺失时回退 FK。"""
+    mapping = profile.get("map", {})
+    rest = profile.get("rest", {})
+    out: dict[str, list[tuple[float, float, float]]] = {}
+    for eff, ik_sem in (("leftFoot", "leftFootIK"), ("rightFoot", "rightFootIK")):
+        ik_bone = mapping.get(ik_sem)
+        keys = motion.get("translations", {}).get(ik_sem)
+        if ik_bone in rest and keys:
+            head = rest[ik_bone]["head"]
+            out[eff] = [
+                (
+                    head[0] + sample_keys(keys, f, quat=False)[0],
+                    head[1] + sample_keys(keys, f, quat=False)[1],
+                    head[2] + sample_keys(keys, f, quat=False)[2],
+                )
+                for f in range(frames)
+            ]
+    missing = [e for e in ("leftFoot", "rightFoot") if e not in out]
+    if missing:
+        targets = [mapping.get(e) for e in missing if mapping.get(e) in rest]
+        fk = forward_positions(
+            profile, motion.get("joints", {}), motion.get("translations", {}),
+            motion.get("root", {}), frames, targets,
+        )
+        for eff in missing:
+            bone = mapping.get(eff)
+            if bone in fk:
+                out[eff] = fk[bone]
+    return out
+
+
+def support_labels(motion: dict, profile: dict) -> list[str | None]:
+    """逐帧判断哪只脚承重。
+
+    规则：
+
+    - 只有一个接触候选 → 就是它；
+    - 两个都在接触 → 把骨盆投影到两脚连线上，离投影点近的一侧承重；
+    - 两脚几乎重合 → 取更低的那只；
+    - 没有候选 → None。
+
+    这是**几何启发式**，不是生物力学承重；它的用途是避免把摆动脚锁死。
+    """
+    frames = int(motion.get("frames", 0))
+    mapping = profile.get("map", {})
+    # 优先用下半身；没有就退回 root（骨盆位置近似）。
+    hips_bone = mapping.get("hips") or mapping.get("root")
+    rest = profile.get("rest", {})
+    labels: list[str | None] = [None] * frames
+    if hips_bone not in rest:
+        return labels
+
+    pelvis = forward_positions(
+        profile, motion.get("joints", {}), motion.get("translations", {}),
+        motion.get("root", {}), frames, [hips_bone],
+    ).get(hips_bone, [])
+    feet = foot_world_positions(motion, profile, frames)
+    if not feet:
+        return labels
+
+    cover: list[list[str]] = [[] for _ in range(frames)]
+    for c in motion.get("contacts", []):
+        eff = c.get("effector")
+        if eff not in ("leftFoot", "rightFoot"):
+            continue
+        for f in range(max(0, int(c["start"])), min(frames, int(c["end"]) + 1)):
+            cover[f].append(eff)
+
+    for f in range(frames):
+        cs = cover[f]
+        if len(cs) == 1:
+            labels[f] = cs[0]
+        elif len(cs) >= 2 and "leftFoot" in feet and "rightFoot" in feet:
+            L = feet["leftFoot"][f]
+            R = feet["rightFoot"][f]
+            dx, dz = R[0] - L[0], R[2] - L[2]
+            denom = dx * dx + dz * dz
+            if denom < 1e-6:
+                labels[f] = "leftFoot" if L[1] <= R[1] else "rightFoot"
+            else:
+                px, pz = pelvis[f][0], pelvis[f][2]
+                t = ((px - L[0]) * dx + (pz - L[2]) * dz) / denom
+                labels[f] = "leftFoot" if t < 0.5 else "rightFoot"
+    return labels
+
+
 def _leg_geometry(profile: dict, side: str) -> tuple[float, tuple[float, float, float]] | None:
     """返回 (腿长, 髋关节 rest head)。"""
     mapping = profile.get("map", {})
@@ -204,6 +297,7 @@ def retarget_motion(
         "clamped": 0,
         "skipped_no_ik": 0,
         "skipped_drift": 0,
+        "skipped_swing": 0,
         "skipped_reach": 0,
         "max_reach_ratio": 0.0,
         "chain_split": split,
@@ -220,6 +314,11 @@ def retarget_motion(
     assumed_h = float(fl.get("assumed_height_m", 1.6))
     target_height = stats["target_height"] or assumed_h
     max_drift_units = float(fl.get("max_lock_drift_m", 0.04)) * target_height / assumed_h
+    max_support_drift = (
+        float(fl.get("max_support_drift_m", 0.12)) * target_height / assumed_h
+    )
+    support_ratio_min = float(fl.get("support_ratio", 0.5))
+    labels = support_labels(out, target)
 
     geometry = {
         "leftFoot": _leg_geometry(target, "left"),
@@ -270,7 +369,15 @@ def retarget_motion(
             mean = tuple(sum(p[i] for p in pts) / len(pts) for i in range(3))
             drift = max(math.dist(p, mean) for p in pts)
             stats["chunks"] += 1
-            if drift > max_drift_units:
+            support = sum(
+                1 for f in range(chunk_start, chunk_end + 1) if labels[f] == effector
+            )
+            support_ratio = support / (chunk_end - chunk_start + 1)
+            if support_ratio < support_ratio_min:
+                stats["skipped_swing"] += 1
+                continue
+            limit = max_support_drift if support_ratio >= support_ratio_min else max_drift_units
+            if drift > limit:
                 stats["skipped_drift"] += 1
                 continue
 
@@ -307,6 +414,19 @@ def retarget_motion(
         else 0.0
     )
     stats["smoothing"] = smooth_foot_lock(out, target, cfg)
+    # 平滑可能放弃一些相邻窗口；覆盖率以最终 contacts 为准。
+    stats["locked"] = sum(len(c.get("locked_chunks", [])) for c in out.get("contacts", []))
+    stats["locked_frames"] = sum(
+        int(e) - int(s) + 1
+        for c in out.get("contacts", [])
+        for s, e, _ in c.get("locked_chunks", [])
+    )
+    stats["locked_coverage"] = (
+        stats["locked_frames"] / (int(out.get("frames", 0)) * 2)
+        if out.get("frames")
+        else 0.0
+    )
+    stats["dropped_smoothing"] = stats["smoothing"].get("dropped_smoothing", 0)
 
     out["meta"]["retarget"] = stats
     return out
@@ -408,42 +528,182 @@ def _limit_step(
 
 
 def smooth_foot_lock(motion: dict, profile: dict, config: dict) -> dict:
-    """平滑被锁定的足 IK 位移序列。"""
+    """锚定式平滑：锁定窗口内**不动**，只在未锁定段做过渡。
+
+    如果某段空隙不够长、无法在限速内完成过渡，就放弃相邻的一个锁定
+    窗口，制造更长的空隙。宁可少锁，也不制造跳变。
+    """
     cfg = config.get("smoothing", {})
     if not cfg.get("enabled", True):
         return {"enabled": False}
-    window = int(cfg.get("window", 2))
+
     assumed = float(config.get("foot_lock", {}).get("assumed_height_m", 1.6))
     height = _model_height(profile) or assumed
     max_rate = float(cfg.get("max_rate_m_per_frame", 0.01)) * height / assumed
+    merge_tol = float(cfg.get("merge_tolerance_m", 0.02)) * height / assumed
 
     frames = int(motion.get("frames", 0))
     translations = motion.get("translations", {})
-    mapping = profile.get("map", {})
-    locked_sems = set()
-    for c in motion.get("contacts", []):
-        if c.get("locked_chunks"):
-            eff = c.get("effector", "")
-            locked_sems.add("leftFootIK" if eff == "leftFoot" else "rightFootIK")
+    contacts = motion.get("contacts", [])
+    stats = {
+        "enabled": True,
+        "series": 0,
+        "ramped_frames": 0,
+        "dropped_smoothing": 0,
+        "unresolved_runs": 0,
+        "max_before": 0.0,
+        "max_after": 0.0,
+        "locked_drift": 0.0,
+        "rate": round(max_rate, 6),
+    }
 
-    stats = {"enabled": True, "series": 0, "max_before": 0.0, "max_after": 0.0, "rate": round(max_rate, 6)}
-    for sem in locked_sems:
+    def runs(mask: list[bool]):
+        out = []
+        i = 0
+        while i < frames:
+            if mask[i]:
+                i += 1
+                continue
+            a = i
+            while i < frames and not mask[i]:
+                i += 1
+            out.append((a, i - 1))
+        return out
+
+    rest = profile.get("rest", {})
+    mapping = profile.get("map", {})
+    for eff, sem in (("leftFoot", "leftFootIK"), ("rightFoot", "rightFootIK")):
         keys = translations.get(sem)
         if not keys:
             continue
+        ik_bone = mapping.get(sem)
+        if ik_bone not in rest:
+            continue
+        head = rest[ik_bone]["head"]
+        related = [(i, c) for i, c in enumerate(contacts) if c.get("effector") == eff and c.get("locked_chunks")]
+        if not related:
+            continue
+
+        intervals: list[list] = []
+        for ci, c in related:
+            for ki, (a, b, pos) in enumerate(c["locked_chunks"]):
+                # locked_chunks 存的是世界坐标；translations 存的是相对 rest 的偏移。
+                local = (pos[0] - head[0], pos[1] - head[1], pos[2] - head[2])
+                intervals.append([int(a), int(b), local, ci, ki])
+        intervals.sort(key=lambda v: v[0])
+
+        kept: list[list] = []
+        dropped: set[tuple[int, int]] = set()
+        for iv in intervals:
+            if kept and iv[0] <= kept[-1][1] + 1:
+                if math.dist(iv[2], kept[-1][2]) <= merge_tol:
+                    kept[-1][1] = max(kept[-1][1], iv[1])
+                    dropped.add((iv[3], iv[4]))
+                    continue
+                dropped.add((iv[3], iv[4]))
+                stats["dropped_smoothing"] += 1
+                continue
+            kept.append(iv)
+
+        if not kept:
+            continue
+
         dense = [sample_keys(keys, f, quat=False) for f in range(frames)]
-        before = max(
-            (math.dist(dense[i], dense[i - 1]) for i in range(1, frames)), default=0.0
-        )
-        smooth = smooth_series(dense, window=window, max_rate=max_rate)
-        after = max(
-            (math.dist(smooth[i], smooth[i - 1]) for i in range(1, frames)), default=0.0
-        )
-        translations[sem] = [[float(f), *smooth[f]] for f in range(frames)]
+        before = max((math.dist(dense[i], dense[i - 1]) for i in range(1, frames)), default=0.0)
+        original = list(dense)
+
+        # 迭代：空隙不够长就再放弃一个相邻窗口
+        for _ in range(30):
+            if not kept:
+                break
+            mask = [False] * frames
+            for a, b, _pos, _, _ in kept:
+                for fr in range(max(0, a), min(frames, b + 1)):
+                    mask[fr] = True
+            start_at = {a: pos for a, _b, pos, _, _ in kept}
+            end_at = {b: pos for _a, b, pos, _, _ in kept}
+            changed = False
+            for a, b in runs(mask):
+                left = end_at.get(a - 1)
+                right = start_at.get(b + 1)
+                if left is None and right is None:
+                    continue
+                if left is not None and right is not None:
+                    delta = math.dist(left, right)
+                elif left is not None:
+                    delta = math.dist(left, original[b])
+                else:
+                    delta = math.dist(original[a], right)
+                need = max(1, math.ceil(delta / max_rate)) if max_rate > 0 else (b - a + 1)
+                if b - a + 1 < need:
+                    victim = None
+                    if right is not None:
+                        victim = next((iv for iv in kept if iv[0] == b + 1), None)
+                    elif left is not None:
+                        victim = next((iv for iv in kept if iv[1] == a - 1), None)
+                    if victim is None:
+                        break
+                    kept.remove(victim)
+                    dropped.add((victim[3], victim[4]))
+                    stats["dropped_smoothing"] += 1
+                    changed = True
+                    break
+            if not changed:
+                break
+
+        if not kept:
+            continue
+
+        for ci, c in related:
+            c["locked_chunks"] = [
+                ch for ki, ch in enumerate(c["locked_chunks"]) if (ci, ki) not in dropped
+            ]
+
+        mask = [False] * frames
+        for a, b, pos, _, _ in kept:
+            for fr in range(max(0, a), min(frames, b + 1)):
+                mask[fr] = True
+                dense[fr] = pos
+
+        for a, b in runs(mask):
+            left = dense[a - 1] if a > 0 and mask[a - 1] else None
+            right = dense[b + 1] if b + 1 < frames and mask[b + 1] else None
+            n = b - a + 1
+            if left is None and right is None:
+                continue
+            if left is not None and right is not None:
+                for i in range(n):
+                    t = (i + 1) / (n + 1)
+                    dense[a + i] = _lerp3(left, right, t)
+            elif left is not None:
+                end = original[b]
+                for i in range(n):
+                    t = (i + 1) / (n + 1)
+                    dense[a + i] = _lerp3(left, end, t)
+            else:
+                start = original[a]
+                for i in range(n):
+                    t = (i + 1) / (n + 1)
+                    dense[a + i] = _lerp3(start, right, t)
+            stats["ramped_frames"] += n
+
+        drift = 0.0
+        for a, b, pos, _, _ in kept:
+            for fr in range(max(0, a), min(frames, b + 1)):
+                drift = max(drift, math.dist(dense[fr], pos))
+        stats["locked_drift"] = max(stats["locked_drift"], drift)
+
+        after = max((math.dist(dense[i], dense[i - 1]) for i in range(1, frames)), default=0.0)
+        translations[sem] = [[float(i), *dense[i]] for i in range(frames)]
         stats["series"] += 1
         stats["max_before"] = max(stats["max_before"], before)
         stats["max_after"] = max(stats["max_after"], after)
+
     return stats
+
+
+def _lerp3(a, b, t):
+    return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t)
 
 
 def _sample(keys: list[list[float]], frame: int) -> tuple[float, float, float]:
