@@ -8,11 +8,13 @@
 | `pmx` | PMX 读取：骨骼 rest/层级、权重、材质（最小集） | 无 |
 | `skeleton` | 生成 `skeleton_profile`：骨长、rest 矩阵、roll、限位、语义映射 | `pmx` |
 | `canonical` | 动作的模型无关表示（语义关节 + 根轨迹 + 接触段 + morph） | `vmd` |
-| `retarget` | 比例/rest/roll 适配、脚锁、手臂 IK、间隙约束、时间平滑 | Blender bpy/mathutils |
-| `physics` | 被动件骨链 PBD（重力/阻尼/距离约束/胶囊碰撞） | numpy |
-| `validate` | BVH 相交、穿透深度、可见性、severity、回归 diff | Blender bpy |
+| `retarget` | 比例/rest 适配、承重/脚锁、骨盆补偿、手臂 IK/间隙、twist、平滑 | 纯 Python |
+| `physics` | 被动件骨链 PBD（重力/阻尼/距离约束/胶囊碰撞） | 纯 Python |
+| `parts` | M2 部位规则（材质/骨骼关键字、左右命名、pair、outside 规则） | 无 |
+| `validate` | severity、CSV/JSON、回归 diff、summary | 无 |
+| `validate_blender` | 网格 BVH、穿透深度、可见性、缩略图、contact sheet | Blender bpy |
 | `writer` | 目标模型的 VMD 导出 | `vmd` |
-| `cli` | 子命令：inspect / retarget / physics / validate | 以上 |
+| `cli` | 子命令：skeleton / inspect / retarget / physics / validate | 以上 |
 
 > 解析层（`vmd` / `pmx`）刻意不依赖 Blender，便于单测与 C++ 下沉。
 
@@ -69,13 +71,22 @@
 }
 ```
 
-### 2.3 `retarget_config.yaml`
+### 2.3 `configs/retarget.json`
 
-```yaml
-foot_lock: { enabled: true, slide_tolerance_m: 0.005 }
-arm_ik: { clearance_m: 0.015, max_push_m: 0.08, pole: "source_elbow" }
-smoothing: { dilate: 2, average: 2, max_rate_m_per_frame: 0.02 }
-limits: { mark_if_push_over_m: 0.08 }
+配置统一用 JSON；文件只需写想覆盖的字段，其余走 `DEFAULT_CONFIG`。
+
+```jsonc
+{
+  "foot_lock": {
+    "enabled": true,
+    "chunk_frames": 20,
+    "max_lock_drift_m": 0.04,
+    "pelvic_compensation": { "mode": "apply", "max_shift_m": 0.08 }
+  },
+  "arm_ik": { "clearance_m": 0.015, "max_push_m": 0.06 },
+  "twist": { "enabled": true, "factor": 0.5 },
+  "smoothing": { "max_rate_m_per_frame": 0.01 }
+}
 ```
 
 ### 2.4 报告
