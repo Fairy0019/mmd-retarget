@@ -34,7 +34,9 @@ import json
 import math
 from pathlib import Path
 
-from .vmd import Vmd
+from .vmd import Vmd, encode_interpolation, LINEAR_INTERPOLATION
+
+_LINEAR64 = encode_interpolation(LINEAR_INTERPOLATION)
 
 __all__ = [
     "CANONICAL_SCHEMA",
@@ -496,6 +498,51 @@ def _append_contact(contacts, name, pts, start, end, cfg, threshold, source="fk"
     )
 
 
+#: 除了 ``センター``，这些骨的位移也要并进根运动，否则换模型会“原地踏步”。
+ROOT_MERGE_BONES = ("グルーブ", "全ての親")
+
+
+def _merge_extra_roots(vmd: Vmd, profile: dict, root: dict) -> dict:
+    """把 ``グルーブ`` / ``全ての親`` 的位移并进 root。
+
+    VMD 里根位移不一定打在 ``センター`` 上；canonical 只有一个 root 通道，
+    所以这里按帧求和（近似，假设它们的父空间方向一致）。
+    """
+    if not root.get("pos"):
+        return root
+    root_bone = profile.get("map", {}).get("root", "センター")
+    extras = [
+        bone for bone in ROOT_MERGE_BONES
+        if bone != root_bone and any(f.bone == bone for f in vmd.bone_frames)
+    ]
+    if not extras:
+        return root
+
+    frames = int(vmd.summary()["frame_end"]) + 1
+    series = {}
+    for bone in extras:
+        keys = [[float(f.frame), *f.position] for f in vmd.bone_frames if f.bone == bone]
+        if not keys:
+            continue
+        if not any(any(abs(v) > 1e-9 for v in k[1:]) for k in keys):
+            continue
+        series[bone] = _clean(keys, 3)
+    if not series:
+        return root
+
+    merged = []
+    for frame in range(frames):
+        x, y, z = sample_keys(root["pos"], frame, quat=False)
+        for keys in series.values():
+            dx, dy, dz = sample_keys(keys, frame, quat=False)
+            x, y, z = x + dx, y + dy, z + dz
+        merged.append([float(frame), x, y, z])
+    root = dict(root)
+    root["pos"] = merged
+    root["merged_bones"] = sorted(series)
+    return root
+
+
 def build_canonical(
     vmd: Vmd,
     profile: dict,
@@ -506,6 +553,7 @@ def build_canonical(
     contact_config: dict | None = None,
 ) -> dict:
     root, joints, extra, translations, extra_translations = _split_motion(vmd, profile)
+    root = _merge_extra_roots(vmd, profile, root)
     max_frame = vmd.summary()["frame_end"]
     frames = int(max_frame) + 1
 
@@ -519,6 +567,16 @@ def build_canonical(
         contacts = detect_contacts(
             profile, joints, translations, root, frames, config=contact_config
         )
+
+    # 保留源 VMD 的非线性插值（64 字节/键），写回时按骨名 + 帧号复用。
+    interp_raw: dict[str, dict[int, str]] = {}
+    for frame in vmd.bone_frames:
+        if frame.interpolation and frame.interpolation != _LINEAR64:
+            interp_raw.setdefault(frame.bone, {})[int(frame.frame)] = frame.interpolation.hex()
+    interpolation = {
+        bone: [[float(fr), h] for fr, h in sorted(keys.items())]
+        for bone, keys in interp_raw.items()
+    }
 
     return {
         "schema": CANONICAL_SCHEMA,
@@ -534,6 +592,7 @@ def build_canonical(
         "translations": translations,
         "extra": extra,
         "extra_translations": extra_translations,
+        "interpolation": interpolation,
         "contacts": contacts,
         "morphs": morphs,
         "meta": {

@@ -165,3 +165,22 @@ def test_contacts_prefer_foot_ik_target():
     assert all(c["source"] == "foot_ik" for c in contacts)
     covered = {f for c in contacts for f in range(c["start"], c["end"] + 1)}
     assert 0 in covered and 30 in covered and 15 not in covered
+
+def test_root_merges_groove_translation():
+    from mmd_retarget.canonical import build_canonical
+    from mmd_retarget.vmd import BoneFrame, Vmd
+
+    vmd = Vmd(
+        model_name="M",
+        bone_frames=[
+            BoneFrame("センター", 0, (0.0, 0.0, 0.0), (0, 0, 0, 1)),
+            BoneFrame("センター", 10, (0.0, 0.0, 0.5), (0, 0, 0, 1)),
+            BoneFrame("グルーブ", 0, (0.0, 1.0, 0.0), (0, 0, 0, 1)),
+            BoneFrame("グルーブ", 10, (0.0, 1.0, 0.0), (0, 0, 0, 1)),
+        ],
+    )
+    profile = {"map": {"root": "センター"}, "rest": {}}
+    out = build_canonical(vmd, profile, detect=False)
+    assert out["root"]["merged_bones"] == ["グルーブ"]
+    assert out["root"]["pos"][0][1:] == [0.0, 1.0, 0.0]
+    assert out["root"]["pos"][10][1:] == [0.0, 1.0, 0.5]

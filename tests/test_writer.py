@@ -94,3 +94,26 @@ def test_output_is_a_valid_vmd():
     assert again.model_name == "Src"
     assert len(again.bone_frames) == len(out.bone_frames)
     assert again.morph_frames == out.morph_frames
+
+def test_morph_map_renames():
+    motion = {"morphs": {"まばたき": [[0, 0.0], [10, 1.0]]}}
+    prof = {"map": {}, "morphs": ["blink"], "rest": {}}
+    vmd = canonical_to_vmd(motion, prof, morph_map={"まばたき": "blink"})
+    assert [m.morph for m in vmd.morph_frames] == ["blink", "blink"]
+
+
+def test_interpolation_preserved():
+    custom = bytes([7] + [20] * 63)
+    vmd = Vmd(
+        model_name="M",
+        bone_frames=[
+            BoneFrame("センター", 0, (0.0, 0.0, 0.0), (0, 0, 0, 1), custom),
+            BoneFrame("センター", 10, (0.0, 0.0, 0.0), (0, 0, 0, 1), custom),
+        ],
+    )
+    prof = {"model": "M", "map": {"root": "センター"}, "rest": {"センター": {"head": [0, 0, 0], "parent": None}}}
+    canon = build_canonical(vmd, prof, detect=False)
+    assert "センター" in canon["interpolation"]
+    out = canonical_to_vmd(canon, prof)
+    frames = [f for f in out.bone_frames if f.interpolation == custom]
+    assert len(frames) == 2

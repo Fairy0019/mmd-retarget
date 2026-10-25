@@ -5,13 +5,14 @@
 把「为 A 体型编排的 VMD，套到 B 体型上」这件事，从**逐帧手调**变成
 **可复现的管线 + 可读的报告**。
 
-> 状态：**v0.1.0**。M0–M2 完成，M3 头发物理可用、裙摆物理是实验特性，
-> M4 集成/文档完成。测试 **95 passed**。
+> 状态：**v0.1.1**。M0–M2 完成，M3 头发物理可用、裙摆 C4-A 工具就绪但未验收，
+> M4 集成/文档完成。测试 **99 passed**。
 >
 > - **M1**：比例缩放、承重/脚锁、骨盆补偿、脊柱链、手臂 IK + 间隙、twist、锚定平滑；
 > - **M2**：BVH 穿透检测、severity、CSV/JSON、多机位/多点可见性、缩略图、
 >   contact sheet、回归 diff + CI 门槛；
-> - **M3**：头发骨链 PBD 启用；裙摆骨链会把腿顶穿，默认关闭（见报告 17）。
+> - **M3**：头发骨链 PBD（侧发/后发分组）；裙摆 C4-A 权重转移工具 + 设计文档，
+>   尚未做渲染验收。
 
 ---
 
@@ -90,6 +91,7 @@ blender -b --python tools/blender_cli.py -- validate \
 | [docs/PLAN.md](docs/PLAN.md) | 里程碑与验收标准 |
 | [docs/STEPS.md](docs/STEPS.md) | 开发步骤拆解 |
 | [docs/bugs/](docs/bugs/README.md) | Bug 复盘库：根因、波及面、回归 |
+| [docs/design/C4-skirt.md](docs/design/C4-skirt.md) | 裙摆 C4 方案（权重转移 / 布料代理） |
 | [docs/reports/](docs/reports/README.md) | 阶段报告与实测数字 |
 | [configs/](configs/README.md) | retarget / physics / parts 配置模板 |
 

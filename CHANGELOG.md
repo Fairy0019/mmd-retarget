@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.1 — 2026-10-25
+
+补齐报告 19 列出的剩余缺口（未做渲染验收）：
+
+- 头发分组（side/back 独立参数）
+- 根运动合并 `グルーブ` / `全ての親`
+- morph 映射（`--morph-map`）
+- VMD 非线性插值保留（透传键）
+- `tools/render_acceptance.py` 视觉验收
+- `tools/skirt_reweight.py` + `docs/design/C4-skirt.md`（裙摆 C4-A）
+- 测试：99 passed
+
 ## 0.1.0 — 2026-10-24
 
 首个可发布版本：M0–M4 主链路打通。

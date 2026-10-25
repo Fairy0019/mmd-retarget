@@ -152,3 +152,12 @@ def test_collision_push_counted():
         },
     )
     assert out["meta"]["physics"]["collision_pushes"] > 0
+
+def test_hair_group_classification():
+    from mmd_retarget.physics import _hair_group
+
+    assert _hair_group("髮/左") == "side"
+    assert _hair_group("髮/右") == "side"
+    assert _hair_group("髮/.L") == "side"
+    assert _hair_group("髮/") == "back"
+    assert _hair_group("髮2/") == "back"

@@ -51,6 +51,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         ],
     },
     "hair_prefixes": ["髮", "Bone_Hair"],
+    # 侧发比背后长发更贴身体：重力小一点、摆幅小一点、保形强一点。
+    "hair_groups": {
+        "side": {"gravity_scale": 0.7, "max_angle_deg": 8.0, "shape_stiffness": 0.08},
+        "back": {},
+    },
     "wing_prefixes": ["上翼_", "下翼_"],
     "wing_radius": 0.12,
     "assumed_height_m": 1.6,
@@ -143,6 +148,11 @@ def _q_slerp(a, b, t):
     wb = math.sin(t * theta) / s
     return tuple(a[i] * wa + b[i] * wb for i in range(4))
 
+
+def _hair_group(key: str) -> str:
+    """骨链 key 形如 ``髮/左`` / ``髮/``；左/右算 side，其余算 back。"""
+    side = key.rsplit("/", 1)[-1]
+    return "side" if side in ("左", "右", ".L", ".R") else "back"
 
 def find_chains(profile: dict, kind: str, cfg: dict) -> list[dict]:
     """按名字找出骨链。返回 ``[{key, bones}]``，bones 已按链序排列。"""
@@ -278,7 +288,8 @@ def _simulate_chain(profile, motion, chain, colliders, cfg, units_per_m, kind="s
     lengths = [math.dist(rest_pts[i], rest_pts[i + 1]) for i in range(n)]
 
     dt = 1.0 / 30.0 / max(1, int(cfg.get("substeps", 2)))
-    g = (0.0, -float(cfg.get("gravity_m_s2", 9.8)) * units_per_m, 0.0)
+    gravity = float(cfg.get("gravity_m_s2", 9.8)) * float(cfg.get("gravity_scale", 1.0))
+    g = (0.0, -gravity * units_per_m, 0.0)
     damping = float(cfg.get("damping", 0.985))
     iterations = max(1, int(cfg.get("iterations", 4)))
     max_step = float(cfg.get("max_step_units", 0.6))
@@ -403,10 +414,13 @@ def simulate(motion: dict, profile: dict, *, config: dict | None = None) -> dict
             extra_radius=float(cfg.get("wing_radius", 0.12)),
         )
         for chain in chains:
-            keys, st = _simulate_chain(profile, out, chain, caps, cfg, units_per_m, "hair")
+            group = _hair_group(chain["key"])
+            chain_cfg = _merge(cfg, cfg.get("hair_groups", {}).get(group, {}))
+            keys, st = _simulate_chain(profile, out, chain, caps, chain_cfg, units_per_m, "hair")
             if keys:
                 extra.update(keys)
-                stats["chains"][f"hair:{chain['key']}"] = st
+                st["group"] = group
+                stats["chains"][f"hair:{group}:{chain['key']}"] = st
                 stats["collision_pushes"] += st["collision_pushes"]
 
     out.setdefault("meta", {})["physics"] = stats

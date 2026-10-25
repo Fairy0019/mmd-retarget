@@ -88,10 +88,18 @@ def cmd_retarget(args: argparse.Namespace) -> int:
             print(f"error: config: {exc}", file=sys.stderr)
             return 1
 
+    morph_map = None
+    if args.morph_map:
+        try:
+            morph_map = json.loads(Path(args.morph_map).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"error: morph map: {exc}", file=sys.stderr)
+            return 1
+
     before = contact_slide_stats(motion, source)
     result = retarget_motion(motion, source, target, config=config)
     after = contact_slide_stats(result, target)
-    out = canonical_to_vmd(result, target)
+    out = canonical_to_vmd(result, target, morph_map=morph_map)
     try:
         write_vmd(out, args.out)
     except OSError as exc:
@@ -360,7 +368,14 @@ def cmd_physics(args: argparse.Namespace) -> int:
     print(f"pushes    : {stats.get('collision_pushes', 0)}")
     print(f"written   : {args.out}")
     if args.vmd:
-        write_vmd(canonical_to_vmd(out, profile), args.vmd)
+        morph_map = None
+        if args.morph_map:
+            try:
+                morph_map = json.loads(Path(args.morph_map).read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                print(f"error: morph map: {exc}", file=sys.stderr)
+                return 1
+        write_vmd(canonical_to_vmd(out, profile, morph_map=morph_map), args.vmd)
         print(f"vmd       : {args.vmd}")
     return 0
 
@@ -391,6 +406,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("-t", "--target", required=True)
     r.add_argument("-o", "--out", required=True)
     r.add_argument("-c", "--config", default=None)
+    r.add_argument("--morph-map", default=None, help="JSON map: source morph name -> target morph name")
     r.set_defaults(func=cmd_retarget)
 
     ph = sub.add_parser("physics", help="bake passive physics (skirt/hair)")
@@ -402,6 +418,7 @@ def build_parser() -> argparse.ArgumentParser:
     ph.add_argument("--skirt", action="store_true", help="enable skirt chains (default off)")
     ph.add_argument("--no-skirt", action="store_true")
     ph.add_argument("--no-hair", action="store_true")
+    ph.add_argument("--morph-map", default=None)
     ph.set_defaults(func=cmd_physics)
 
     v = sub.add_parser("validate", help="detect and report clipping (Blender only)")
