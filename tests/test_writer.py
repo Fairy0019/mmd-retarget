@@ -117,3 +117,30 @@ def test_interpolation_preserved():
     out = canonical_to_vmd(canon, prof)
     frames = [f for f in out.bone_frames if f.interpolation == custom]
     assert len(frames) == 2
+
+
+def test_new_frames_use_linear_interpolation():
+    from mmd_retarget.vmd import LINEAR_INTERPOLATION, encode_interpolation
+
+    custom = bytes([7] + [20] * 63)
+    q = (0.0, 0.0, 0.0, 1.0)
+    canon = {
+        "schema": 1,
+        "frames": 11,
+        "root": {},
+        "joints": {"leftUpperArm": [[0, *q], [5, *q], [10, *q]]},
+        "translations": {},
+        "extra": {},
+        "interpolation": {"腕": [[0, custom.hex()], [10, custom.hex()]]},
+        "morphs": {},
+    }
+    prof = {
+        "model": "M",
+        "map": {"leftUpperArm": "腕"},
+        "rest": {"腕": {"head": [0, 0, 0], "parent": None}},
+    }
+    out = canonical_to_vmd(canon, prof)
+    by_frame = {f.frame: f for f in out.bone_frames if f.bone == "腕"}
+    assert by_frame[0].interpolation == custom
+    assert by_frame[10].interpolation == custom
+    assert by_frame[5].interpolation == encode_interpolation(LINEAR_INTERPOLATION)
