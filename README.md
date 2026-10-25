@@ -92,6 +92,7 @@ blender -b --python tools/blender_cli.py -- validate \
 | [docs/STEPS.md](docs/STEPS.md) | 开发步骤拆解 |
 | [docs/bugs/](docs/bugs/README.md) | Bug 复盘库：根因、波及面、回归 |
 | [docs/design/C4-skirt.md](docs/design/C4-skirt.md) | 裙摆 C4 方案（权重转移 / 布料代理） |
+| [docs/plans/](docs/plans/2026-10-26-server-next.md) | **服务器下一步计划**（验收、C4、CI、跨模型、发布） |
 | [docs/reports/](docs/reports/README.md) | 阶段报告与实测数字 |
 | [configs/](configs/README.md) | retarget / physics / parts 配置模板 |
 
