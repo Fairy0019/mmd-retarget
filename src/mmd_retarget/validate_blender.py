@@ -203,6 +203,12 @@ def run_validation(
     pairs = part_pairs(rules)
     bad_outside = outside_is_bad(rules)
 
+    # 打开已有 .blend 时 addon 可能未启用；导入 VMD 前先确保 MMD Tools 可用。
+    try:
+        bpy.ops.preferences.addon_enable(module="bl_ext.user_default.mmd_tools")
+    except Exception:
+        pass
+
     if model_path:
         bpy.ops.wm.read_factory_settings(use_empty=True)
         bpy.ops.preferences.addon_enable(module="bl_ext.user_default.mmd_tools")
