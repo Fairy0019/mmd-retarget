@@ -508,8 +508,6 @@ def _merge_extra_roots(vmd: Vmd, profile: dict, root: dict) -> dict:
     VMD 里根位移不一定打在 ``センター`` 上；canonical 只有一个 root 通道，
     所以这里按帧求和（近似，假设它们的父空间方向一致）。
     """
-    if not root.get("pos"):
-        return root
     root_bone = profile.get("map", {}).get("root", "センター")
     extras = [
         bone for bone in ROOT_MERGE_BONES
@@ -519,6 +517,7 @@ def _merge_extra_roots(vmd: Vmd, profile: dict, root: dict) -> dict:
         return root
 
     frames = int(vmd.summary()["frame_end"]) + 1
+    base_pos = root.get("pos") or [[float(f), 0.0, 0.0, 0.0] for f in range(frames)]
     series = {}
     for bone in extras:
         keys = [[float(f.frame), *f.position] for f in vmd.bone_frames if f.bone == bone]
@@ -532,7 +531,7 @@ def _merge_extra_roots(vmd: Vmd, profile: dict, root: dict) -> dict:
 
     merged = []
     for frame in range(frames):
-        x, y, z = sample_keys(root["pos"], frame, quat=False)
+        x, y, z = sample_keys(base_pos, frame, quat=False)
         for keys in series.values():
             dx, dy, dz = sample_keys(keys, frame, quat=False)
             x, y, z = x + dx, y + dy, z + dz

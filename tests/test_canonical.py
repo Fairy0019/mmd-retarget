@@ -184,3 +184,24 @@ def test_root_merges_groove_translation():
     assert out["root"]["merged_bones"] == ["グルーブ"]
     assert out["root"]["pos"][0][1:] == [0.0, 1.0, 0.0]
     assert out["root"]["pos"][10][1:] == [0.0, 1.0, 0.5]
+
+
+def test_root_merges_groove_without_center_translation():
+    """Bug：センター 没有位移键时，旧实现会直接 return，グルーブ 位移丢失。"""
+    from mmd_retarget.canonical import build_canonical
+    from mmd_retarget.vmd import BoneFrame, Vmd
+
+    vmd = Vmd(
+        model_name="M",
+        bone_frames=[
+            # センター 只有旋转，没有位移
+            BoneFrame("センター", 0, (0.0, 0.0, 0.0), (0, 0, 0, 1)),
+            BoneFrame("センター", 10, (0.0, 0.0, 0.0), (0, 0, 0, 1)),
+            BoneFrame("グルーブ", 0, (0.0, 0.0, 0.0), (0, 0, 0, 1)),
+            BoneFrame("グルーブ", 10, (0.0, 0.0, 2.0), (0, 0, 0, 1)),
+        ],
+    )
+    out = build_canonical(vmd, {"map": {"root": "センター"}, "rest": {}}, detect=False)
+    assert out["root"]["merged_bones"] == ["グルーブ"]
+    assert out["root"]["pos"][0][1:] == [0.0, 0.0, 0.0]
+    assert out["root"]["pos"][10][1:] == [0.0, 0.0, 2.0]
