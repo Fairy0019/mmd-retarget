@@ -11,7 +11,7 @@
 - CHANGELOG 补齐本轮验收/CI/两个 bug 修复；
 - 发布说明：`docs/releases/v0.1.1.md`；
 - tag：`v0.1.1`；
-- GitHub Release：`v0.1.1`。
+- GitHub Release：<https://github.com/Fairy0019/mmd-retarget/releases/tag/v0.1.1>。
 
 ## 2. 验收汇总
 
