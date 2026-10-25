@@ -73,6 +73,10 @@ def main() -> int:
     ap.add_argument("--samples", type=int, default=32)
     ap.add_argument("--engine", default="BLENDER_EEVEE", choices=["BLENDER_EEVEE", "CYCLES"])
     ap.add_argument("--title", default="MMD visual acceptance")
+    ap.add_argument(
+        "--clay", action="store_true",
+        help="override all materials with neutral clay (recommended for clipping/silhouette)",
+    )
     args = ap.parse_args(argv)
 
     if args.blend:
@@ -105,6 +109,16 @@ def main() -> int:
     scene.render.image_settings.file_format = "PNG"
     scene.render.use_file_extension = True
     scene.render.engine = args.engine
+
+    if args.clay:
+        mat = bpy.data.materials.new("acceptance_clay")
+        mat.use_nodes = True
+        bsdf = mat.node_tree.nodes.get("Principled BSDF")
+        if bsdf:
+            bsdf.inputs["Base Color"].default_value = (0.55, 0.56, 0.60, 1.0)
+            bsdf.inputs["Roughness"].default_value = 0.65
+        bpy.context.view_layer.material_override = mat
+        print("[acceptance] clay material override enabled")
 
     print(f"[acceptance] camera={scene.camera.name} frames={len(frames)} out={out_dir}")
     for frame in frames:
