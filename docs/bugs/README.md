@@ -29,6 +29,7 @@
 | [006](006-root-zero-translation.md) | root 的 0 位移键被吞 | 高 | 已修 | 角色整体高度、脚接触 |
 | [007](007-leg-ik-vs-fk.md) | 腿是 IK 驱动，不能用 FK 推脚踝 | **极高** | 已修 | 接触检测、脚锁、腿 IK |
 | [008](008-root-merge-requires-center.md) | root 合并要求 センター 先有位移 | 高 | 已修 | 纯 グルーブ/全ての親 动作、根运动 |
+| [009](009-physics-skirt-flag-noop.md) | `physics --skirt` 是空开关 | 高 | 已修 | CLI 物理实验、报告 17 数据来源 |
 
 严重度按“错了会不会静默产生错误结果”排；能直接崩的反而低。
 

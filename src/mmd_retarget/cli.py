@@ -350,6 +350,8 @@ def cmd_physics(args: argparse.Namespace) -> int:
             print(f"error: config: {exc}", file=sys.stderr)
             return 1
     chains = config.setdefault("chains", {})
+    if args.skirt:
+        chains["skirt"] = True
     if args.no_skirt:
         chains["skirt"] = False
     if args.no_hair:

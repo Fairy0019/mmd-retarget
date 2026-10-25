@@ -137,3 +137,37 @@ def test_physics_requires_inputs(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["physics"])
     assert exc.value.code == 2
+
+
+def test_physics_skirt_flag_is_honored(tmp_path):
+    """bug 009：--skirt 之前只是 parser 里有，cmd_physics 完全没读。"""
+    import json
+
+    from mmd_retarget.canonical import save_canonical
+
+    profile = {
+        "model": "T",
+        "map": {"root": "センター"},
+        "rest": {
+            "センター": {"head": [0, 10, 0], "parent": None},
+            "Q_0_0": {"head": [0, 10, 0], "tail": [1, 10, 0], "parent": "センター"},
+            "Q_1_0": {"head": [1, 10, 0], "tail": [2, 10, 0], "parent": "Q_0_0"},
+        },
+        "colliders": [],
+    }
+    motion = {
+        "schema": 1, "fps": 30, "frames": 6,
+        "root": {"pos": [[0, 0, 0, 0]], "rot": []},
+        "joints": {}, "translations": {}, "extra": {}, "extra_translations": {},
+        "contacts": [], "morphs": {}, "meta": {},
+    }
+    p = tmp_path / "profile.json"
+    m = tmp_path / "motion.json"
+    out = tmp_path / "out.json"
+    p.write_text(json.dumps(profile), encoding="utf-8")
+    save_canonical(motion, m)
+
+    assert main(["physics", str(m), "-p", str(p), "-o", str(out), "--skirt"]) == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    chains = data["meta"]["physics"]["chains"]
+    assert any(k.startswith("skirt:") for k in chains)
