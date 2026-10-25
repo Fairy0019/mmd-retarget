@@ -2,15 +2,18 @@
 
 ## 0.1.1 — 2026-10-25
 
-补齐报告 19 列出的剩余缺口（未做渲染验收）：
+补齐报告 19 的缺口，并完成服务器侧验收：
 
-- 头发分组（side/back 独立参数）
-- 根运动合并 `グルーブ` / `全ての親`
-- morph 映射（`--morph-map`）
-- VMD 非线性插值保留（透传键）
-- `tools/render_acceptance.py` 视觉验收
-- `tools/skirt_reweight.py` + `docs/design/C4-skirt.md`（裙摆 C4-A）
-- 测试：99 passed
+- 头发分组（side/back 独立参数）；验收 high 0=0、≥5 mm 76<82
+- 根运动合并 `グルーブ` / `全ての親`；修 bug 008（纯 グルーブ 丢根）
+- morph 映射（`--morph-map`）；验收 2,305 帧目标名
+- VMD 非线性插值保留；验收 25,973/25,973 键字节一致
+- `tools/render_acceptance.py` 视觉验收 + `--clay`；10 张 / 0 黑图
+- `tools/skirt_reweight.py` + `docs/design/C4-skirt.md`（C4-A，实测无收益）
+- `tools/ci_physics.sh` 物理回归；900 帧基线 + diff 门槛
+- `tools/cross_model_matrix.py`；真实第二副 PMX 缺失，任务阻塞
+- 修 bug 009（`physics --skirt` 空开关）
+- 测试：**102 passed**
 
 ## 0.1.0 — 2026-10-24
 

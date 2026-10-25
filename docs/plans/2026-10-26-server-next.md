@@ -132,4 +132,4 @@ gh release create v0.1.1 --notes-file CHANGELOG.md
 | 2 C4-A | ❌ | high 17=17；max 58.57→61.25（+物理），无视觉收益；转路线 B | 报告 27 |
 | 3 CI | ✅ | 基线 19 high；裙摆回归 58 high / new 217 / exit 1；修 bug 009 | 报告 28 |
 | 4 跨模型 | ⚠️ 阻塞 | 仅 1 副人类 PMX；合成 0.85/1.0/1.15 矩阵通过，缺真实第二副 | 报告 29 |
-| 5 发布 | ⬜ | | |
+| 5 发布 | ✅ | tag `v0.1.1` + GitHub Release；102 passed | 报告 30 |
