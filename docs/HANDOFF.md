@@ -1,10 +1,11 @@
 # 交接说明
 
-> 状态：**v0.1.1 · M0–M2 完成，M3 头发可用，M4 发布**。
+> 状态：**v0.1.2 · M0–M2 完成，M3 头发可用，C4-B 布料工具已实现，M4 发布**。
 > M1：比例、承重、分窗脚锁、骨盆补偿、锚定平滑、脊柱链、手臂两骨 IK、间隙约束、twist。
 > M2：BVH 深度、severity、回归门槛、多机位/多点可见性、缩略图、contact sheet、
 > 可配置部位规则。
-> M3：头发骨链 PBD（侧/后分组）；裙摆 C4-A 权重工具已提供，**未做渲染验收**。
+> M3：头发骨链 PBD（侧/后分组）；裙摆 C4-A 权重工具（验收未通过）+
+> C4-B 布料代理 `tools/skirt_cloth.py`（5 帧冒烟通过，待 300 帧/视觉验收）。
 > M4：CLI/配置/QUICKSTART/demo/视觉验收。
 
 ## 1. 环境
@@ -61,19 +62,16 @@ src/mmd_retarget/
 > [`docs/plans/2026-10-26-server-next.md`](plans/2026-10-26-server-next.md)。**
 > 下面只是摘要。
 
-**已写完但未验收**（见报告 20）：
-
-1. 头发分组 / 根运动合并 / morph 映射 / 插值保留；
-2. `tools/render_acceptance.py` 视觉验收；
-3. `tools/skirt_reweight.py` + `docs/design/C4-skirt.md`（裙摆 C4-A）。
+**已完成验收**（v0.1.1，报告 21–32）：头发分组、根合并、morph 映射、插值保留、
+视觉验收、CI、跨模型、发布；**C4-A 未通过**。
 
 **接下来**：
 
-1. 跑 30 秒样本：渲染 + `validate`，验收上面三项；
-2. C4-A 的权重接缝与穿模目视检查；不够再上布料（路线 B）；
-3. 物理接 CI：30 秒样本 + `validate --max-new`；
-4. 根运动合并后复测脚锁/滑步；
-5. 跨模型矩阵：再找 1–2 副体型差异明显的 PMX。
+1. **C4-B 布料代理**：`tools/skirt_cloth.py` 先跑 300 帧（quality 3），
+   用 `render_acceptance.py` 出 10 张图，与 C4-A/原始做 contact sheet；
+2. 通过后全片（quality 6）；不通过调 `--mass/--bending/--quality`，
+   不要回头改骨链参数；
+3. 布料结果与 `validate` 对照，确认 `leg-skirt` 的 high 不增加。
 
 ### 已知坑（务必先看）
 

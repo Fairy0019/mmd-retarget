@@ -36,27 +36,30 @@ blender -b scene.blend --python tools/skirt_reweight.py -- \
 - 不解决“裙片网格比骨链胖”的壳偏移，极端抬腿仍可能穿；
 - 需要 Blender 端验收（缩略图 + 渲染）。
 
-## 路线 B：布料代理（未实现，设计）
+## 路线 B：布料代理（已实现工具，待验收）
 
 **目标**：用真正的布料壳替代裙片变形。
 
-**步骤**
+**工具**：`tools/skirt_cloth.py`（报告 33）
 
-1. 复制角色网格，只保留裙片面（按材质）→ `SkirtCloth`；
-2. 腰部顶点（Q 根骨附近）设为 pin 组；
-3. Cloth 参数：quality 5–8、collision distance 5–10 mm、
-   structural 15–30、bending 0.5–2、mass 0.1–0.3、自碰撞先关；
-4. 身体用**简化代理**（胶囊组合或低模），不要用 63k 顶点原网格；
-5. 300 帧试跑，稳定后全片烘焙；
-6. 导出：把布料顶点簇的质心映射回 Q 骨旋转（与 physics 的烘焙步骤相同），
-   或保留独立网格仅用于渲染。
+```bash
+blender -b scene.blend --python tools/skirt_cloth.py -- \
+  --out scene_cloth.blend --start 1 --end 300 --quality 3
+```
 
-**风险**
+**做法**
 
-- 薄片隧穿、抖动、自碰撞开销；
-- 5640 帧 CPU 时间的量级（预计小时级）；
-- 与形态键/材质的同步；
-- 需要人工目视验收，不能只看数值。
+1. 复制裙片面 → `SkirtCloth` 代理；
+2. 腰部顶点（Q 根骨权重）设为 pin 组；
+3. Cloth 参数：quality / mass / bending / collision distance；
+4. 身体用低模 + Collision 代理（不用 63k 顶点原网格）；
+5. 顺序推进帧（`bake_all` 会连带烘焙 447 刚体的 5640 帧 cache，已避开）；
+6. 两遍采样：先读每帧 Q 骨质心，再解算 Q 骨旋转写入 Action；
+7. 删除代理，保存 .blend（原网格由 Q 骨驱动）。
+
+**已验证**：5 帧冒烟（链路、Q 键、代理清理、范围恢复）。
+
+**未验证**：300 帧/全片稳定性、视觉、参数调优、薄片隧穿、断点续跑。
 
 ## 验收（两条路线共用）
 
