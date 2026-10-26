@@ -133,3 +133,4 @@ gh release create v0.1.1 --notes-file CHANGELOG.md
 | 3 CI | ✅ | 基线 19 high；裙摆回归 58 high / new 217 / exit 1；修 bug 009 | 报告 28 |
 | 4 跨模型 | ✅ | Lumine 18.42：high 285→206、可见 high 98→79、max 83.4→74.1；VMD 字节级可复现 | 报告 31 |
 | 5 发布 | ✅ | tag `v0.1.1` + GitHub Release；102 passed | 报告 30 |
+| 6 C4-B 300 帧 | ❌ | 最好 q10/m0.02/b10：high 20>17，后段 new 17；不进入全片 | 报告 34 |

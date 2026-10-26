@@ -68,6 +68,7 @@ def main() -> int:
     ap.add_argument("--out", required=True, help="output directory")
     ap.add_argument("--frames", default="0:300:60", help="0:300:30 or 0,60,120")
     ap.add_argument("--camera", default=None, help="camera object name")
+    ap.add_argument("--motion", default=None, help="import this VMD before rendering")
     ap.add_argument("--width", type=int, default=960)
     ap.add_argument("--height", type=int, default=1200)
     ap.add_argument("--samples", type=int, default=32)
@@ -83,6 +84,12 @@ def main() -> int:
         bpy.ops.wm.open_mainfile(filepath=args.blend)
 
     scene = bpy.context.scene
+    if args.motion:
+        bpy.ops.preferences.addon_enable(module="bl_ext.user_default.mmd_tools")
+        scene.frame_set(0)  # VMD 导入按当前帧偏移，必须先归零
+        bpy.ops.mmd_tools.import_vmd(
+            filepath=args.motion, scale=1.0, margin=0, update_scene_settings=True
+        )
     if args.camera:
         cam = bpy.data.objects.get(args.camera)
         if cam is None or cam.type != "CAMERA":

@@ -210,12 +210,26 @@ def _setup_cloth(proxy, pin_group: str, args, start: int, end: int):
     return mod
 
 
-def _collision_proxy(body, ratio: float):
+def _collision_proxy(body, ratio: float, exclude_materials: set[int] | None = None):
+    import bmesh
+
     proxy = body.copy()
     proxy.data = body.data.copy()
     proxy.name = "BodyCollision"
     for col in body.users_collection:
         col.objects.link(proxy)
+    # 碰撞体不能包含裙子自身：否则布料在和自己的一份静态拷贝打架，
+    # 会被顶回腰部/塌成一团（300 帧 quality 3 的首轮失败原因）。
+    if exclude_materials:
+        bm = bmesh.new()
+        bm.from_mesh(proxy.data)
+        bm.faces.ensure_lookup_table()
+        doomed = [f for f in bm.faces if f.material_index in exclude_materials]
+        if doomed:
+            bmesh.ops.delete(bm, geom=doomed, context="FACES")
+        bm.to_mesh(proxy.data)
+        bm.free()
+        proxy.data.update()
     mod = proxy.modifiers.new("Decimate", "DECIMATE")
     mod.ratio = max(0.02, min(1.0, ratio))
     cm = proxy.modifiers.new("Collision", "COLLISION")
@@ -303,33 +317,47 @@ def _bake_bones(arm, chains, frames, centroids, max_angle_deg: float):
         for chain in chains:
             root = chain[0]
             parent = rest[root].parent
-            pq = (
+            parent_pose_q = (
                 arm.pose.bones[parent.name].matrix.to_quaternion()
                 if parent is not None
                 else Quaternion((1, 0, 0, 0))
             )
-            # 链尾方向：拿最后一根骨的 rest 方向作为兜底
+            parent_rest_q = (
+                parent.matrix_local.to_quaternion()
+                if parent is not None
+                else Quaternion((1, 0, 0, 0))
+            )
+            pq = parent_pose_q
             for i, bone in enumerate(chain):
                 rb = rest[bone]
-                rest_dir = (rb.tail_local - rb.head_local).normalized()
+                R_rest_b = rb.matrix_local.to_quaternion()
+                rest_dir_world = (rb.tail_local - rb.head_local).normalized()
                 if i + 1 < len(chain):
                     desired = Vector(centroids[chain[i + 1]][idx]) - Vector(centroids[bone][idx])
                 else:
-                    desired = (rb.tail_local - rb.head_local)
+                    desired = (rb.tail_local - rb.head_local).copy()
                 if desired.length < 1e-9:
                     continue
                 desired.normalize()
-                local_dir = pq.inverted() @ desired
-                local = rest_dir.rotation_difference(local_dir)
+
+                # 世界/armature 空间的最短弧，保持 rest 的 roll
+                R_delta = rest_dir_world.rotation_difference(desired)
+                R_pose_b = R_delta @ R_rest_b
+                # pose = parent_pose * (parent_rest^-1 * bone_rest) * local
+                base = pq @ (parent_rest_q.inverted() @ R_rest_b)
+                local = base.inverted() @ R_pose_b
                 q = (local.x, local.y, local.z, local.w)
                 if prev_local[bone] is not None and _q_angle(prev_local[bone], q) > limit:
                     q = _q_slerp(prev_local[bone], q, limit / _q_angle(prev_local[bone], q))
                 prev_local[bone] = q
                 pb = arm.pose.bones[bone]
                 pb.rotation_mode = "QUATERNION"
-                pb.rotation_quaternion = Quaternion(q)
+                # Blender Quaternion 构造顺序是 (w, x, y, z)，这里 q 是 xyzw。
+                local = Quaternion((q[3], q[0], q[1], q[2]))
+                pb.rotation_quaternion = local
                 pb.keyframe_insert("rotation_quaternion", frame=f, group=bone)
-                pq = pq @ Quaternion(q)
+                pq = base @ local
+                parent_rest_q = R_rest_b
     print(f"[cloth] baked {len(chains)} chains over {len(frames)} frames")
 
 
@@ -360,7 +388,7 @@ def main() -> int:
     proxy = _make_proxy(body, "SkirtCloth", mat_idx)
     pin = _pin_group(proxy, arm, args.bones)
     _setup_cloth(proxy, pin, args, start, end)
-    _collision_proxy(body, args.proxy_ratio)
+    _collision_proxy(body, args.proxy_ratio, mat_idx)
 
     chains = _bone_chains(arm, args.bones)
     print(f"[cloth] chains={len(chains)} bones={sum(len(c) for c in chains)}")
