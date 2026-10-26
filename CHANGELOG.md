@@ -11,7 +11,7 @@
 - `tools/render_acceptance.py` 视觉验收 + `--clay`；10 张 / 0 黑图
 - `tools/skirt_reweight.py` + `docs/design/C4-skirt.md`（C4-A，实测无收益）
 - `tools/ci_physics.sh` 物理回归；900 帧基线 + diff 门槛
-- `tools/cross_model_matrix.py`；真实第二副 PMX 缺失，任务阻塞
+- `tools/cross_model_matrix.py`；薇斯纳→Lumine 真实跨模型验证（high 285→206）
 - 修 bug 009（`physics --skirt` 空开关）
 - 测试：**102 passed**
 
