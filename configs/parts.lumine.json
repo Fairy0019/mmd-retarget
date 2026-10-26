@@ -1,0 +1,8 @@
+{
+  "material": {
+    "skirt": ["Skirt"],
+    "hair": ["Hair"],
+    "wings": ["Wing"]
+  },
+  "exclude_material": []
+}

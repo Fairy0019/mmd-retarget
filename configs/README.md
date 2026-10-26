@@ -5,6 +5,7 @@
 | `retarget.json` | 比例、脚锁、骨盆补偿、手臂 IK/间隙、twist、平滑 |
 | `physics.json` | 头发/裙摆 PBD 参数；默认 `skirt: false`（骨链会把腿顶穿） |
 | `parts.json` | M2 部位划分规则；换非日文命名的模型时覆盖 |
+| `parts.lumine.json` | 英文材质名的示例（Lumine：Skirt/Hair） |
 
 `retarget` / `physics` 用 `-c configs/xxx.json`；`validate` 用
 `--parts-config configs/parts.json`。文件只需要写想覆盖的字段，其余走默认值。
